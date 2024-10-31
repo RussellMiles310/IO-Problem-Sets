@@ -12,7 +12,6 @@ def ACF_estimation(df, theta0, print_results = 0):
     #theta0 = np.array([1,1])     #Initial guess for parameters beta_k, beta_l
     W0 = np.eye(2)     #Weight matrix -- use the identity for now. 
 
-    
 #=== Fit Phi =================================================================#    
     
     xvars = df[['k', 'l', 'm']].to_numpy()
@@ -24,7 +23,6 @@ def ACF_estimation(df, theta0, print_results = 0):
     df["Phi"] = Phi
     #Add into the dataframe
     df['Phiprev'] = df.groupby('firm_id')['Phi'].shift(1)
-    
     
 #=== Drop NaNs after creating the lagged Phi. Define GMM arguments ===========#    
     df_nonans = df.dropna()
@@ -53,7 +51,7 @@ def ACF_estimation(df, theta0, print_results = 0):
     
     theta_results_grad = opt.minimize(gmm_obj_ACF, theta0, args=gmm_args,
                            tol=tolerance, jac=autogradient, method='L-BFGS-B',                              
-                            options={'ftol': 1e-16, 'gtol': 1e-16, 'maxiter': 10000})
+                            options={'ftol': tolerance, 'gtol': tolerance, 'maxiter': 20000})
         
     theta=theta_results_grad.x
     #Get the slope, rho. It's the slope of the regression used to find the moments. 
@@ -71,13 +69,14 @@ def ACF_estimation(df, theta0, print_results = 0):
     return results_coefficients, results_convergence
 
 #=============================================================================#    
-def GNR_estimation(df):
+def GNR_estimation(df, alpha0, print_results = 0):
 
 #=== options =================================================================#
     degree= 2
     degree_omega = 2
     
 #=== Fit D_{jt} ==============================================================#    
+
     #Make the polynomial design matrix
     xvars = df[['k', 'l', 'm']].to_numpy()
     s = df[['s']].to_numpy()
@@ -86,7 +85,7 @@ def GNR_estimation(df):
     autogradient_nlls = grad(nlls_share_obj)
     autohessian_nlls = hessian(nlls_share_obj)
     #initial guess
-    gammaprime0 = np.ones(X_poly_D.shape[1])/10
+    gammaprime0 = np.ones(X_poly_D.shape[1])/2
 
     #minimize to fit the coefficients gammaprime 
     #Enforce that X@gamma is nonnegative, otherwise we get negative values in the log
@@ -108,12 +107,7 @@ def GNR_estimation(df):
     #Back out the residuals, epsilons
     df['epsilonhat'] = np.log(df['Dhat']) - df['s']
     # mean of epsilon is 1e-12 --- good sign
-    #mean_eps = np.mean((df['epsilonhat']))
-    #var_eps = np.var((df['epsilonhat']))
-    #From here, estimate curlyE which is the sample average of exp(epsilons)
-    #Turns out to be 1.02.  the mean of a lognormal variable of mean 0 is e^(sigma^2/2). That implies the variance of the epsilons is vey low. 
     CurlyEhat = (np.mean(np.exp(df['epsilonhat'])))
-    #lognormal_guess_curlyEhat = np.exp(var_eps/2)
     #The theoretial guess for CurlyEhat given epsilon ~ N(0, sigma^2) is very close to the actual curlyEhat, 
     #suggesting the epsilons are approximately normally distributed. 
     #It follows from the math above that ...
@@ -144,7 +138,7 @@ def GNR_estimation(df):
     CurlyY = df_nonans['CurlyY'].to_numpy()
     CurlyYprev = df_nonans['CurlyYprev'].to_numpy()
     
-    alpha0 = np.ones(X_poly_omega.shape[1])
+    #alpha0 = np.ones(X_poly_omega.shape[1])/2
     W0 = np.eye(len(alpha0))
     
 #=== Run the GMM estimation  =================================================#    
@@ -158,11 +152,26 @@ def GNR_estimation(df):
     alpha = gmm_results_GNR.x
     delta, eta = gmm_stage2_error_GNR(alpha, X_poly_omega, Xprev_poly_omega, CurlyY, CurlyYprev)[1:3]
     
+    #Calculate the omegas
+    df_nonans['ConstantC'] = X_poly_omega@alpha
+    df_nonans['omega'] = df_nonans['ConstantC'] + df_nonans['CurlyY']
     
-    print("The error is:",  gmm_results_GNR.fun)
-    print("The gradient is:",  gmm_results_GNR.jac)
-    print("The coefficients for the integration constant [alpha] are:",  gmm_results_GNR.x)
-    print("The coefficients for productivity omega [delta] are:",  delta)
+    Eomega = np.mean(df_nonans['omega'])
+    Edf_dm = np.mean(df_nonans['df_dm'])
+    
+    
+    if print_results == 1:
+        print("The error is:",  gmm_results_GNR.fun)
+        print("The gradient is:",  gmm_results_GNR.jac)
+        print("The coefficients for the integration constant [alpha] are:",  gmm_results_GNR.x)
+        print("The coefficients for productivity omega [delta] are:",  delta)
+        print("The average produc",  delta)
+        print("the average productivity [omega] is:", Eomega)
+        print("the average elasticity [df/dm] is:", Edf_dm)
+    
+    results = np.array([Eomega, Edf_dm])
+    
+    return 
 
 
 def bootstrap(func, theta0, df, n_samples = 1000):
