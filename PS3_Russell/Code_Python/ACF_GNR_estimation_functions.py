@@ -169,9 +169,11 @@ def GNR_estimation(df, alpha0, print_results = 0):
         print("the average productivity [omega] is:", Eomega)
         print("the average elasticity [df/dm] is:", Edf_dm)
     
-    results = np.array([Eomega, Edf_dm])
+    results_params = np.array([Eomega, Edf_dm])
     
-    return 
+    results_convergence = gmm_results_GNR.fun
+    
+    return results_params, results_convergence, alpha
 
 
 def bootstrap(func, theta0, df, n_samples = 1000):
@@ -186,7 +188,7 @@ def bootstrap(func, theta0, df, n_samples = 1000):
         
         # Get coefficients from the provided function
         coefs, conv = func(df_boot, theta0)
-        coefficients[i, :] =coefs
+        coefficients[i,:] =coefs
         convergence[i] =conv
 
     # Return the bootstrap results
