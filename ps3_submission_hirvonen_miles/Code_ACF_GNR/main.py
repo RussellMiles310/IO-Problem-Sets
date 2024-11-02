@@ -10,7 +10,8 @@ from ACF_GNR_estimation_functions import *
 
 #==== Options ================================================================#
 #Number of bootstrap samples
-n_boot_samples = 10 
+np.random.seed(9)
+n_boot_samples = 100
 
 #==== load_data ==============================================================#
 
