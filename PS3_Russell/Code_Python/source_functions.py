@@ -105,7 +105,7 @@ def moment_error_ACF(theta, y, k, l, kprev, lprev, Phi, Phiprev):
     coeffs, b0_plus_omega_hat = regress(yvar, Xdesign)[:2]
     #Get residual
     xi = b0_plus_omega -  b0_plus_omega_hat 
-    return xi, coeffs[1]
+    return xi, coeffs, b0_plus_omega, b0_plus_omega_prev
 
 def moment_ex_restrictions_ACF(k, lprev):
     #Moment conditions include exogeneity restrictions for 1, k_{it}, l_{it-1}, and Phi. 
@@ -188,3 +188,108 @@ def gmm_obj_fcn_GNR(alpha, X_poly_omega, Xprev_poly_omega, CurlyY, CurlyYprev, W
 
 #Define autogradient
 autogradient_GNR = grad(gmm_obj_fcn_GNR)
+
+
+
+#==== functions for bootstrapping ============================================#
+
+
+def bootstrap(func, param0, df, n_samples = 1000, columns=5):
+    # Store results
+    coefficients = np.zeros((n_samples, columns))  # 3 coefficients
+    convergence = np.zeros((n_samples, 1))
+    
+    list_df_boot = bootstrap_sample_panel(df, n_samples)
+    
+    
+    # Perform bootstrap sampling
+    for i in range(n_samples):
+        # Sample with replacement        
+        # Get coefficients from the provided function
+        printflag = 0
+        param0_temp = param0
+        for tries in range(50):
+            coefs, conv = func(list_df_boot[i], param0_temp)[:2]
+            if conv < 1e-10:
+                if printflag == 1:
+                    print("convergence succeeded on sample", i)
+                break
+            else:  #Run again if no convergence (occurs rarely)
+                print("convergence failed on sample", i, "; trying new initial guess.")
+                printflag = 1
+                perturb = np.random.uniform(0.3, 3)
+                if isinstance(param0_temp, tuple):
+                    a, b = param0
+                    param0_temp = (a*perturb, b)
+                else:
+                    param0_temp = param0*perturb
+
+                
+        coefficients[i,:] =coefs
+        convergence[i] =conv
+
+    # Return the bootstrap results
+    return coefficients, convergence
+
+# Bootstrap sampling function
+def bootstrap_sample_panel(data, n_samples, id_col='firm_id'):
+    # Create an empty list to store bootstrap samples
+    bootstrap_samples = []
+    original_firms = data[id_col].unique()
+    num_firms = len(original_firms)
+
+    for _ in range(n_samples):
+        # Sample 'firm_id's with replacement
+        sampled_firms = np.random.choice(original_firms, size=num_firms, replace=True)
+
+        # Initialize a list to store the sampled data with unique firm IDs
+        sample_data_list = []
+
+        for i, firm in enumerate(sampled_firms):
+            # Extract the firm data block
+            firm_data = data[data[id_col] == firm].copy()
+
+            # Assign a new unique firm ID by offsetting with the current sample index
+            firm_data[id_col] = f"{firm}_{i}"  # e.g., '1_0', '2_1', etc.
+
+            # Append to the list for this sample
+            sample_data_list.append(firm_data)
+
+        # Concatenate all firm blocks in this sample
+        sample_data = pd.concat(sample_data_list).reset_index(drop=True)
+        
+        # Append to list of samples
+        bootstrap_samples.append(sample_data)
+
+    return bootstrap_samples
+
+def summarize_array(point_estimate, arr, row_names):
+    # Ensure arr is a NumPy array
+    arr = np.asarray(arr)
+    
+    # Validate row_names length
+    if len(row_names) != arr.shape[1]:
+        raise ValueError("The length of row_names must match the number of columns in the array.")
+    
+    # Compute summary statistics
+    mean = np.mean(arr, axis=0)
+    p2_5 = np.percentile(arr, 2.5, axis=0)
+    p25 = np.percentile(arr, 25, axis=0)
+    median = np.median(arr, axis=0)
+    p75 = np.percentile(arr, 75, axis=0)
+    p97_5 = np.percentile(arr, 97.5, axis=0)
+    std_error = np.std(arr, axis=0, ddof=1) / np.sqrt(arr.shape[0])
+
+    # Create a DataFrame to organize results
+    summary_df = pd.DataFrame({
+        'Point Estimate': point_estimate,
+        'Bootstrap Mean': mean,
+        '2.5th Percentile': p2_5,
+        '25th Percentile': p25,
+        'Median': median,
+        '75th Percentile': p75,
+        '97.5th Percentile': p97_5,
+        'Standard Error': std_error
+    }, index=row_names)
+
+    return summary_df

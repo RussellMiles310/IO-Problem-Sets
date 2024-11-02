@@ -55,7 +55,7 @@ def ACF_estimation(df, theta0, print_results = 0):
         
     theta=theta_results_grad.x
     #Get the slope, rho. It's the slope of the regression used to find the moments. 
-    rho = moment_error_ACF(theta, y, k, l, kprev, lprev, Phi, Phiprev)[1]
+    rho = moment_error_ACF(theta, y, k, l, kprev, lprev, Phi, Phiprev)[1][1]
     
     if print_results == 1:
         print("The gradient at the optimum is: ", autogradient(theta, y, k, l, kprev, lprev, Phi, Phiprev, Vex, W0))
@@ -63,13 +63,30 @@ def ACF_estimation(df, theta0, print_results = 0):
         print("The estimates using autograd: [beta_k, beta_l] = ", theta)
         print("The slope of the AR(1) of productivity is: rho = ", rho)
     
-    results_coefficients = np.array([theta[0], theta[1], rho])
+    
+    #Calculate omega and beta0
+    xi, Rho, b0_plus_omega, b0_plus_omega_prev = moment_error_ACF(theta, y, k, l, kprev, lprev, Phi, Phiprev)
+
+    omegaprev = (b0_plus_omega-b0_plus_omega_prev - Rho[0] - xi)/(Rho[1]-1)
+    omega = Rho[0] + Rho[1]*omegaprev + xi
+    
+    Eomega = np.mean(omega)
+    
+    Ebeta0 = np.mean(b0_plus_omega-omega)
+    
+    results_coefficients = np.array([Ebeta0, theta[0], theta[1], rho, Eomega])
     results_convergence = gmm_obj_ACF(theta, y, k, l, kprev, lprev, Phi, Phiprev, Vex, W0)
+    
+    #df_nonans['omega'] = omega
+    #df_nonans['omegaprev'] = omegaprev
     
     return results_coefficients, results_convergence
 
 #=============================================================================#    
-def GNR_estimation(df, alpha0, print_results = 0):
+def GNR_estimation(df, initial_guesses, print_results = 0):
+
+    
+    alpha0, gammaprime0 = initial_guesses
 
 #=== options =================================================================#
     degree= 2
@@ -85,7 +102,7 @@ def GNR_estimation(df, alpha0, print_results = 0):
     autogradient_nlls = grad(nlls_share_obj)
     autohessian_nlls = hessian(nlls_share_obj)
     #initial guess
-    gammaprime0 = np.ones(X_poly_D.shape[1])/2
+    #gammaprime0 = np.ones(X_poly_D.shape[1])/2
 
     #minimize to fit the coefficients gammaprime 
     #Enforce that X@gamma is nonnegative, otherwise we get negative values in the log
@@ -145,8 +162,11 @@ def GNR_estimation(df, alpha0, print_results = 0):
     
     args_GNR = (X_poly_omega, Xprev_poly_omega, CurlyY, CurlyYprev, W0)
     
+    tolerance = 1e-24
+    
     gmm_results_GNR = opt.minimize(gmm_obj_fcn_GNR, alpha0, args=args_GNR,
-                           tol=1e-24, jac=autogradient_GNR, method='L-BFGS-B'
+                           tol=1e-24, jac=autogradient_GNR, method='L-BFGS-B', 
+                           options={'ftol': tolerance, 'gtol': tolerance, 'maxiter': 20000}
     )
     
     alpha = gmm_results_GNR.x
@@ -160,39 +180,28 @@ def GNR_estimation(df, alpha0, print_results = 0):
     Edf_dm = np.mean(df_nonans['df_dm'])
     
     
+    #Assuming Cobb-Douglas, we can get elasticities with OLS
+    df_nonans['f'] = df_nonans['CurlyD'] - df_nonans['ConstantC']
+    #df_nonans['f_plus_epsilon'] = df_nonans['y'] - df_nonans['omega']
+    f = df_nonans['f']
+    
+    #Run OLS
+    klm = df_nonans[['k', 'l', 'm']]
+    Xklm = np.hstack((np.ones((klm.shape[0],1)), klm.to_numpy()))
+    fbeta_cobbdouglas, _, _ = regress(f, Xklm)
+    
     if print_results == 1:
         print("The error is:",  gmm_results_GNR.fun)
         print("The gradient is:",  gmm_results_GNR.jac)
         print("The coefficients for the integration constant [alpha] are:",  gmm_results_GNR.x)
         print("The coefficients for productivity omega [delta] are:",  delta)
-        print("The average produc",  delta)
         print("the average productivity [omega] is:", Eomega)
         print("the average elasticity [df/dm] is:", Edf_dm)
+        print("----Assuming Cobb-Douglas----")
+        print("[beta_0, beta_k, beta_l, beta_m] = ", fbeta_cobbdouglas.flatten())
     
-    results_params = np.array([Eomega, Edf_dm])
-    
+    results_params = np.concatenate((fbeta_cobbdouglas.flatten(), [Edf_dm], [Eomega]))
+        
     results_convergence = gmm_results_GNR.fun
     
-    return results_params, results_convergence, alpha
-
-
-def bootstrap(func, theta0, df, n_samples = 1000):
-    # Store results
-    coefficients = np.zeros((n_samples, 3))  # 3 coefficients
-    convergence = np.zeros((n_samples, 1))
-    
-    # Perform bootstrap sampling
-    for i in range(n_samples):
-        # Sample with replacement
-        df_boot = df.sample(frac=1, replace=True)
-        
-        # Get coefficients from the provided function
-        coefs, conv = func(df_boot, theta0)
-        coefficients[i,:] =coefs
-        convergence[i] =conv
-
-    # Return the bootstrap results
-    return coefficients, convergence
-
-
-    
+    return results_params, results_convergence, alpha, gammaprime

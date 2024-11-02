@@ -1,0 +1,13 @@
+ACF and GNR estimation coded in Python.
+
+*main.py: runs the estimation. 
+
+*ACF_GNR_estimation_functions.py: contains the functions for estimationg ACF and GNR. 
+
+*source_functions.py: contains helper functions such as 
+	-- Polynomial design matrix creation
+	-- Linear regression 
+	-- ACF and GMM moment errors and objective function
+	
+* For more exposition on the methods we used, see the folder jupyter_notebooks_for_exposition
+* We tried joint ACF estimation, but could not get it to work due to time constraints
