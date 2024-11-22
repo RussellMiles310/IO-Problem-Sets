@@ -9,3 +9,5 @@ plot(xfp,fp,"-")
 
 hold on
 plot(xfpa,fpa,"-")
+
+shares_flat=shares(:);
