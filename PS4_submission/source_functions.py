@@ -107,7 +107,7 @@ def solve_init_deltas(params, shares, nus_on_prices, MJN):
 #=============================================================================#
 # blp_instruments_all: gets matrix of instruments used in moment conditions 
 #=============================================================================#
-def blp_instruments_all(X, W_costs, prices, MJN):
+def blp_instruments_all(X, W_costs, Z_costs, prices, MJN):
     """
     Computes the matrix of instruments for all (j, m) pairs in a vectorized manner.
     
@@ -138,6 +138,9 @@ def blp_instruments_all(X, W_costs, prices, MJN):
 
     # Next element: W (in the marginal cost function)
     W_costs_reshaped = W_costs.reshape(M, J, -1)
+    
+    # Next element: W (in the marginal cost function)
+    Z_costs_reshaped = Z_costs.reshape(M, J, -1)
 
     # Final element: Prices
     prices_reshaped = prices.reshape(M, J, -1)
@@ -149,7 +152,8 @@ def blp_instruments_all(X, W_costs, prices, MJN):
         X_j_sum,
         X_m_sum,
         W_costs_reshaped,
-        prices_reshaped
+        prices_reshaped, 
+        Z_costs_reshaped
     ], axis=-1)  # Shape: (M, J, 7)
     
     # Reshape back to (J * M, 6)
@@ -185,6 +189,54 @@ def blp_moment(params, Z, Az, MJN):
     sum_vec = jnp.sum(xis*Z, axis=0)  # Shape: (instrument_features,)
     return (sum_vec / (J*M))
 
+
+#=============================================================================#
+# blp_moment: gets matrix of instruments used in moment conditions 
+#=============================================================================#
+# Z: matrix of instruments used to calculate moment conditions
+# Az: Annihilator matrix for the demand-side, used to recover xis from deltas. 
+# Xs: matrix of supply-side regressors: [1, wcost, zcost]
+# As: Annihilator matrix for the suppply side, used to recover the marginal cost residual, omega. 
+def blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, MJN, conduct = "oligopoly"):
+    """
+    Computes the BLP moment vector using vectorized instruments.
+    
+    Parameters:
+    ----------
+    params : array-like
+        Model parameters.
+    X : jnp.ndarray
+        Input data matrix of shape (J * M, features).
+        
+    Returns:
+    -------
+    sum_vec : jnp.ndarray
+        The moment vector divided by the number of market and products, shape (instrument_features,).
+    """
+    ###### First: Demand-side moments
+    M, J, N_instruments, N = MJN
+    deltas = params[1+N_instruments:].reshape(-1, 1)  # Shape: (J * M, 1)
+    xis = Az @ deltas # Use the annihilator matrix to recover xi
+    moment_demand_side = jnp.sum(xis*Z, axis=0)  # Shape: (instrument_features,)
+    
+    ###### Next: Supply-side moments
+    # Need to get alpha
+    betas_and_alpha_hat = (M_iv_est @ deltas)
+    betas_hat = betas_and_alpha_hat[:3]
+    alpha_hat = -betas_and_alpha_hat[3]
+    sigma_alpha = params[0]
+    # Calculate elasticities and marginal cost
+    elas = calculate_price_elasticity(betas_hat, alpha_hat, sigma_alpha, xis, X, prices, shares, nus, MJN)
+    mc = calculate_marginal_costs(elas, conduct, prices, shares, MJN)
+    # Find the residual of the marginal cost equation
+    omegas = As @ mc
+    moment_supply_side = jnp.sum(omegas*Xs, axis=0)  # Shape: (instrument_features,)
+
+    #Put the moments together
+    moments_all = jnp.concatenate([moment_demand_side, moment_supply_side], axis = 0)
+    return (moments_all / (J*M))
+
+
 #=============================================================================#
 # objective_mpec
 #=============================================================================#
@@ -202,6 +254,17 @@ def constraint_g(params, Z, Az, MJN):
     eta = params[1:1+N_instruments]
     return g_xi - eta
 
+
+#blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, MJN, conduct = "oligopoly")
+#=============================================================================#
+# constraint_g_joint
+#=============================================================================#
+def constraint_g_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, MJN):
+    _, _, N_instruments, _ = MJN
+    g_xi = blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, MJN)
+    eta = params[1:1+N_instruments]
+    return g_xi - eta
+
 #=============================================================================#
 # constraint_s
 #=============================================================================#
@@ -211,6 +274,7 @@ def constraint_s(params, shares, nus_on_prices, MJN):
 
 # Compute the Jacobian of the constraints using Jax
 constraint_g_jac = jacobian(constraint_g)
+constraint_g_joint_jac = jacobian(constraint_g_joint)
 constraint_s_jac = jacobian(constraint_s)
 
 
@@ -304,14 +368,14 @@ def standard_errors(thetastar, Z, Az, M_iv_est, shares, nus_on_prices, MJN):
 #=============================================================================#
 # Calculate price elasticities
 #=============================================================================#
-def calculate_price_elasticity(betas, alpha, sigma_alpha, xi, X, prices, shares, MJN):
+def calculate_price_elasticity(betas, alpha, sigma_alpha, xi, X, prices, shares, nus, MJN):
 
     M, J, N_instruments, N = MJN    
 
     # Draw alphas and calculate the utilities for each consumer
-    alphas = (sigma_alpha*np.random.lognormal(0.0, 1.0, M*N) + alpha).reshape(M, N)
+    alphas = (sigma_alpha*nus + alpha).reshape(M, N)
     
-    utilities = (betas.reshape(1, 3) @ X.T).reshape(J*M, -1) - prices*np.repeat(alphas, repeats=J, axis=0) + xi
+    utilities = (betas.reshape(1, 3) @ X.T).reshape(J*M, -1) - prices*jnp.repeat(alphas, repeats=J, axis=0) + xi
 
     # Reshape utilities for markets and products
     utilities_reshaped = utilities.reshape(M, J, N)  # Shape: (M, J, N)
@@ -333,17 +397,17 @@ def calculate_price_elasticity(betas, alpha, sigma_alpha, xi, X, prices, shares,
     ind_shares = ind_shares.reshape(J*M, N)
     
     # Create a (J*M) x (J*M) matrix that will store the elasticities
-    elasticities = np.zeros((J, J, M))
+    elasticities = jnp.zeros((J, J, M))
     
     # Calculate price elasticities
     for m in range(M):
         for j in range(J):
             for k in range(J):
                 if j == k:
-                    elast = (-prices[j]/shares[j])*alphas[m]*ind_shares[j, :]*(1 - ind_shares[j, :])
+                    elast = (-prices[J*m + j]/shares[J*m + j])*alphas[m]*ind_shares[J*m + j, :]*(1 - ind_shares[J*m + j, :])
                 else:
-                    elast = (prices[k]/shares[j])*alphas[m]*ind_shares[j, :]*ind_shares[k, :]
-                elasticities[j, k, m] = elast.sum()/N
+                    elast = (prices[J*m + k]/shares[J*m + j])*alphas[m]*ind_shares[J*m + j, :]*ind_shares[J*m + k, :]
+                elasticities = elasticities.at[j, k, m].set(elast.sum()/N)
                 
     return elasticities
 
@@ -359,19 +423,19 @@ def calculate_marginal_costs(elasticities, conduct, prices, shares, MJN):
     if conduct == "perfect":
         return prices
     elif conduct == "collusion":
-        ownership = np.ones((J, J))
+        ownership = jnp.ones((J, J))
     elif conduct == "oligopoly":
-        ownership = np.eye(J)
+        ownership = jnp.eye(J)
     else:
         print("The specified conduct is not an option ('perfect', 'collusion', 'oligopoly').")
         print("Returning the vector of prices (i.e., the marginal costs for the perfect competition case).")
         
-    mc = np.zeros(J*M).reshape(J*M, -1)
+    mc = jnp.zeros(J*M).reshape(J*M, -1)
     
     for m in range(M):
             elast_mkt = elasticities[:, :, m].reshape(J, J)
-            mc_mkt = np.linalg.inv(ownership*elast_mkt) @ shares[J*m:J*m + J].reshape(J, -1) + prices[J*m:J*m + J].reshape(J, -1)
-            mc[J*m:J*m + J] = mc_mkt
+            mc_mkt = jnp.linalg.inv(ownership*elast_mkt) @ shares[J*m:J*m + J].reshape(J, -1) + prices[J*m:J*m + J].reshape(J, -1)
+            mc = mc.at[J*m:J*m + J].add(mc_mkt)
 
     return mc
 
