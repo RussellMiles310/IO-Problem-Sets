@@ -283,6 +283,106 @@ def standard_errors(thetastar, Z, Az, M_iv_est, shares, nus_on_prices, MJN):
 
 
 #=============================================================================#
+# Calculate price elasticities
+#=============================================================================#
+def calculate_price_elasticity(betas, alpha, sigma_alpha, xi, X, prices, shares, MJN):
+
+    M, J, N_instruments, N = MJN    
+
+    # Draw alphas and calculate the utilities for each consumer
+    alphas = (sigma_alpha*np.random.lognormal(0.0, 1.0, M*N) + alpha).reshape(M, N)
+    
+    utilities = (betas.reshape(1, 3) @ X.T).reshape(J*M, -1) - prices*np.repeat(alphas, repeats=J, axis=0) + xi
+
+    # Reshape utilities for markets and products
+    utilities_reshaped = utilities.reshape(M, J, N)  # Shape: (M, J, N)
+    
+    # Compute the stabilization constant (max utility per market per individual)
+    max_utilities = jnp.max(utilities_reshaped, axis=1, keepdims=True)  # Shape: (M, 1, N)
+    
+    # Stabilized exponentials
+    exp_utilities = jnp.exp(utilities_reshaped - max_utilities)  # Shape: (M, J, N)
+    
+    # Adjust the "outside option" (1 becomes exp(-max_utilities))
+    outside_option = jnp.exp(-max_utilities)  # Shape: (M, 1, N)
+    
+    # Compute the stabilized denominator
+    sum_exp_utilities = outside_option + exp_utilities.sum(axis=1, keepdims=True)  # Shape: (M, 1, N)
+    
+    # Compute shares
+    ind_shares = exp_utilities / sum_exp_utilities  # Shape: (M, J, N)
+    ind_shares = ind_shares.reshape(J*M, N)
+    
+    # Create a (J*M) x (J*M) matrix that will store the elasticities
+    elasticities = np.zeros((J, J, M))
+    
+    # Calculate price elasticities
+    for m in range(M):
+        for j in range(J):
+            for k in range(J):
+                if j == k:
+                    elast = (-prices[j]/shares[j])*alphas[m]*ind_shares[j, :]*(1 - ind_shares[j, :])
+                else:
+                    elast = (prices[k]/shares[j])*alphas[m]*ind_shares[j, :]*ind_shares[k, :]
+                elasticities[j, k, m] = elast.sum()/N
+                
+    return elasticities
+
+
+#=============================================================================#
+# Calculate marginal costs
+#=============================================================================#
+
+def calculate_marginal_costs(elasticities, conduct, prices, shares, MJN):
+    
+    M, J, N_instruments, N = MJN    
+
+    if conduct == "perfect":
+        return prices
+    elif conduct == "collusion":
+        ownership = np.ones((J, J))
+    elif conduct == "oligopoly":
+        ownership = np.eye(J)
+    else:
+        print("The specified conduct is not an option ('perfect', 'collusion', 'oligopoly').")
+        print("Returning the vector of prices (i.e., the marginal costs for the perfect competition case).")
+        
+    mc = np.zeros(J*M).reshape(J*M, -1)
+    
+    for m in range(M):
+            elast_mkt = elasticities[:, :, m].reshape(J, J)
+            mc_mkt = np.linalg.inv(ownership*elast_mkt) @ shares[J*m:J*m + J].reshape(J, -1) + prices[J*m:J*m + J].reshape(J, -1)
+            mc[J*m:J*m + J] = mc_mkt
+
+    return mc
+
+#=============================================================================#
+# Calculate consumer surplus
+#=============================================================================#
+
+def calculate_consumer_surplus(betas, alpha, sigma_alpha, xi, X, prices, MJN):
+
+    M, J, N_instruments, N = MJN    
+    
+    # Draw alphas and calculate the utilities for each consumer
+    alphas = (sigma_alpha*np.random.lognormal(0.0, 1.0, M*N) + alpha).reshape(M, N)
+    
+    utilities = (betas.reshape(1, 3) @ X.T).reshape(J*M, -1) - prices*np.repeat(alphas, repeats=J, axis=0) + xi
+    utilities_exp = np.exp(utilities)
+
+    # Create an array of shape (M, N) that will store consumer surplus for each consumer in all markets
+    cs = np.zeros((M, N))
+    
+    for m in range(M):
+        utilities_exp_mkt = utilities_exp[J*m:J*m + J, :]
+        cs[m, :] = np.log(1 + utilities_exp_mkt.sum(axis=0))/alphas[m, :]
+
+    cs = cs.sum(axis=1)/N
+    return cs
+
+
+
+#=============================================================================#
 #=============================================================================#
 #=============================================================================#
 #=============================================================================#
@@ -290,7 +390,11 @@ def standard_errors(thetastar, Z, Az, M_iv_est, shares, nus_on_prices, MJN):
 #=============================================================================#
 # Functions for the first part: making graphs, loading the data, etc. 
 #=============================================================================#
-
+#=============================================================================#
+#=============================================================================#
+#=============================================================================#
+#=============================================================================#
+#=============================================================================#
 
 #=============================================================================#
 # Loading data from MATLAB
