@@ -37,6 +37,7 @@ def s(params, nus_on_prices, MJN):
     M, J, N_instruments, N = MJN
     
     sigma = params[0]
+    
     # Use lax.dynamic_slice for dynamic slicing
     deltas_start = N_instruments + 1
     deltas = lax.dynamic_slice(params, (deltas_start,), (params.shape[0] - deltas_start,)).reshape(-1, 1)
@@ -380,7 +381,7 @@ def calculate_marginal_costs(elasticities, conduct, prices, shares, MJN):
 
 def calculate_consumer_surplus(betas, alpha, sigma_alpha, xi, X, prices, MJN):
 
-    M, J, N_instruments, N = MJN    
+    M, J, N_instruments, N = MJN  
     
     # Draw alphas and calculate the utilities for each consumer
     alphas = (sigma_alpha*np.random.lognormal(0.0, 1.0, M*N) + alpha).reshape(M, N)
