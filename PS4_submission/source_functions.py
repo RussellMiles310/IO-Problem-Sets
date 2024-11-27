@@ -246,26 +246,28 @@ def standard_errors(thetastar, Z, Az, M_iv_est, shares, nus_on_prices, MJN):
 
     M, J, N_instruments, N = MJN
 
-    #Predicted deltas, xis, and moment conditions
+    # Predicted deltas, xis, and moment conditions
     deltahat = thetastar[1+N_instruments:].reshape(-1, 1)
     xihat = np.array(Az@deltahat)
     g0 = np.array(Z*xihat)
 
-    #Covariance matrix of moment conditions ("meat" of the sandwich formula)
-    Bbar=np.cov(g0.T)
+    # Covariance matrix of moment conditions ("meat" of the sandwich formula)
+    Bbar = np.cov(g0.T)
       
-    #Gradient of shares evaluated at the solution
+    # Gradient of shares evaluated at the solution
     grad_s_star = np.array(constraint_s_jac(thetastar, shares, nus_on_prices, MJN))
-    ### Calculate derivative terms
+    
+    # Calculate derivative terms
     ds_ddelta = grad_s_star[:, 1+N_instruments:]
     ds_dsigma = grad_s_star[:, 0]
     ddelta_dsigma = -np.linalg.solve(ds_ddelta, ds_dsigma)
 
-    ### Constructing the gradient matrix, G
+    # Constructing the gradient matrix, G
     dG0 = np.zeros((J*M, 1+N_instruments+J*M))
     dG0[:, 0] = ddelta_dsigma
     dG0[:, 1+N_instruments:] = np.eye(J*M)
-    #Reshape it by product and market
+    
+    # Reshape it by product and market
     dg = dG0.reshape(M, J, 1+N_instruments+J*M)
 
     Z_reshaped = Z.reshape(M, J, N_instruments)
@@ -274,23 +276,26 @@ def standard_errors(thetastar, Z, Az, M_iv_est, shares, nus_on_prices, MJN):
     for i in range(dg.shape[0]):
         for j in range(dg.shape[1]):
             G += np.outer(Z_reshaped[i, j, :], dg[i, j, :])
-    G=G/(J*M)
-    GTG=G.T@G
-    #Using pseudoinverse because there's a bunch of zero columns and rows, corresponding with eta, which make the matrix non-invertible.
-    #Maybe we should just cut out the eta rows and columns. I'm not sure if doing that would change the results. 
-    GTGinv = np.linalg.pinv(GTG)
+            
+    G = G/(J*M)
+    GTG = G.T @ G
+
+    # Using pseudoinverse because there's a bunch of zero columns and rows, corresponding with eta, which make the matrix non-invertible
+    GTG_inv = np.linalg.pinv(GTG)
     
-    ### Variance-covariance matrix of the GMM estimates
-    Vgmm = np.array(GTGinv @ (G.T) @ Bbar @ G @ GTGinv)
-    #Get the parts of the VCV we care about
-    vsigma = Vgmm[0,0]
-    Vdelta = Vgmm[1+N_instruments:, 1+N_instruments:]
-    #Get the variance covariance matrix of beta
-    Vbeta = np.array(M_iv_est @ Vdelta @ (M_iv_est.T))
+    # Variance-covariance matrix of the GMM estimates
+    V_gmm = np.array(GTG_inv @ (G.T) @ Bbar @ G @ GTG_inv)
     
-    ### Get the standard errors
-    se_betas = np.sqrt(np.diag(Vbeta)/(J*M))
-    se_sigma = np.sqrt(vsigma/(J*M))
+    # Get the parts of the VCV we care about
+    v_sigma = V_gmm[0,0]
+    V_delta = V_gmm[1+N_instruments:, 1+N_instruments:]
+    
+    # Get the variance covariance matrix of beta
+    V_beta = np.array(M_iv_est @ V_delta @ (M_iv_est.T))
+    
+    # Get the standard errors
+    se_betas = np.sqrt(np.diag(V_beta)/(J*M))
+    se_sigma = np.sqrt(v_sigma/(J*M))
     
     return se_sigma, se_betas
 
