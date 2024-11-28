@@ -89,12 +89,8 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
 
         
     #blp_moment_test = blp_moment_joint(params_init, X, Z, Az, M_iv_est, Xs, As, prices, shares, MJN)
-    #Testing elasticity function
-    #elas_hat = calculate_price_elasticity(params_correct, xi_true, X, M_iv_est, prices, shares, nus, MJN) # Elasticities
-    
-    #elas_jac = jacobian(elas_hat)
-    #jac_test = elas_jac(params_correct, xi_true, X, M_iv_est, prices, shares, nus, MJN)
-    
+
+
 
     if delta_solve_init:
         #### Solve initial deltas for improved initial guess. 
@@ -186,13 +182,6 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
     beta_hat = beta_and_alpha_hat[:3]
     alpha_hat = -beta_and_alpha_hat[3].item()
     sigma_alpha_hat = theta_hat[0].item()
-    
-    #Calculate gamma if we're solving the supply-side joint version
-    if mode == "supply_joint":
-        ### Calculate gamma_hat
-        elas = calculate_price_elasticity(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, MJN)
-        mc = calculate_marginal_costs(elas, "oligopoly", prices, shares, MJN)
-        gamma_hat = (np.linalg.inv(Xs.T@Xs)@Xs.T)@mc 
 
     print(beta_hat)
     print(alpha_hat)
@@ -204,28 +193,21 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
     print("#============================================================================#")
 
     #========== Calculate the standard errors =====================================================================================================#
-    if mode == "supply_joint":
-        se_sigma, se_betas = standard_errors_joint(theta_hat, Z, Az, M_iv_est, shares, nus_on_prices, MJN)
-        se_sigma, se_betas = 0
-        se = np.append([se_sigma], [se_betas])
-
-    else: 
-        se_sigma, se_betas = standard_errors(theta_hat, Z, Az, M_iv_est, shares, nus_on_prices, MJN)
-        se = np.append([se_sigma], se_betas)
-
+    se_sigma, se_betas = standard_errors(theta_hat, Z, Az, M_iv_est, shares, nus_on_prices, MJN)
+    se = np.append([se_sigma], se_betas)
 
     #========== Calculate the elasticities =====================================================================================================#
     #Predicted deltas, xis, and moment conditions
     beta_true_array = np.array(beta_true)
     #True value of the elasticities
-    elasticities_true = calculate_price_elasticity(params_correct, xi_true, X, M_iv_est, prices, shares, nus, MJN)
+    elasticities_true = calculate_price_elasticity(beta_true_array, alpha_true, sigma_alpha_true, xi_true, X, prices, shares, nus, MJN)
     #Mean of the true value of elasticities
-    mean_elasticities_true = elasticities_true.reshape(J, J, M).mean(axis=2)
+    mean_elasticities_true = elasticities_true.mean(axis=2)
     #######
     #Predicted value of the elasticities
-    elasticities_hat = calculate_price_elasticity(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, MJN)
+    elasticities_hat = calculate_price_elasticity(beta_hat, alpha_hat, sigma_alpha_hat, xi_hat, X, prices, shares, nus, MJN)
     #Mean of the true value of elasticities
-    mean_elasticities_hat = elasticities_hat.reshape(J, J, M).mean(axis=2)
+    mean_elasticities_hat = elasticities_hat.mean(axis=2)
 
     #========== Calculate the marginal costs =====================================================================================================#
     #oligopoly
