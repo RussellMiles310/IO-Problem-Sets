@@ -254,9 +254,9 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
     }
     if mode == "supply_joint":
         OUT["gamma_hat"] = gamma_hat
-        OUT["se_names"] = ["sigma_alpha", "beta0", "beta1", "beta2", "alpha"]
-    else:
         OUT["se_names"] = ["sigma_alpha", "beta0", "beta1", "beta2", "alpha", "gamma0", "gamma1", "gamma2"]
+    else:
+        OUT["se_names"] = ["sigma_alpha", "beta0", "beta1", "beta2", "alpha"]
 
     print("#============================================================================#")
     print("#== BLP Estimation Complete")
