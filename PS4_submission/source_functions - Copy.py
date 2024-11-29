@@ -7,7 +7,7 @@ import numpy as np
 from scipy.io import loadmat  # this is the SciPy module that loads mat-files
 from scipy.optimize import root, minimize
 import matplotlib.pyplot as plt
-from jax import grad, jacobian, hessian, config, jit, lax, jacfwd
+from jax import grad, jacobian, hessian, config, jit, lax
 import jax.numpy as jnp
 import warnings
 from functools import partial
@@ -197,7 +197,7 @@ def blp_moment(params, Z, Az, MJN):
 # Az: Annihilator matrix for the demand-side, used to recover xis from deltas. 
 # Xs: matrix of supply-side regressors: [1, wcost, zcost]
 # As: Annihilator matrix for the suppply side, used to recover the marginal cost residual, omega. 
-def blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN, conduct = "oligopoly"):
+def blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, MJN, conduct = "oligopoly"):
     """
     Computes the BLP moment vector using vectorized instruments.
     
@@ -221,7 +221,7 @@ def blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nu
     
     ###### Next: Supply-side moments
     # Calculate elasticities and marginal cost
-    elas = calculate_price_elasticity(params, xis, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN)
+    elas = calculate_price_elasticity(params, xis, X, M_iv_est, prices, shares, nus, MJN)
     
     #elas = calculate_price_elasticity(betas_hat, alpha_hat, sigma_alpha, xis, X, prices, shares, nus, MJN)
     mc = calculate_marginal_costs(elas, conduct, prices, shares, MJN)
@@ -257,9 +257,9 @@ def constraint_g(params, Z, Az, MJN):
 # constraint_g_joint
 #=============================================================================#
 #@partial(jit, static_argnums=(10,))
-def constraint_g_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN):
+def constraint_g_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, MJN):
     _, _, N_instruments, _ = MJN
-    g_xi = blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN)
+    g_xi = blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, MJN)
     eta = params[1:1+N_instruments]
     return g_xi - eta
 
@@ -370,6 +370,10 @@ def standard_errors(thetastar, Z, Az, M_iv_est, shares, nus_on_prices, MJN):
 #=============================================================================#
 
 ### See if this can help avoid crashes in Jax
+def mc_for_se(params, xi, X, M_iv_est, prices, shares, nus, MJN):
+    elas = calculate_price_elasticity(params, xi, X, M_iv_est, prices, shares, nus, MJN)
+    mc = calculate_marginal_costs(elas, "oligopoly", prices, shares, MJN)
+    return mc
 
 def standard_errors_joint(theta_hat, X, Z, Az, M_iv_est, Xs, prices, shares, nus_on_prices, nus, MJN):
 
@@ -388,9 +392,8 @@ def standard_errors_joint(theta_hat, X, Z, Az, M_iv_est, Xs, prices, shares, nus
     
     ### Supply-side moments
     As = np.eye(Xs.shape[0]) - Xs@np.linalg.inv(Xs.T@Xs)@Xs.T #supply-side annihilator matrix
-    elas_hat = calculate_price_elasticity(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN) # Elasticities
+    elas_hat = calculate_price_elasticity(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, MJN) # Elasticities
     mc_hat = calculate_marginal_costs(elas_hat, "oligopoly", prices, shares, MJN)                       # Marginal Costs
-    
     ##### Moment condition
     g0_supply = np.array(Xs*mc_hat) # Vector of moment conditions, (J*M x 7)
     
@@ -416,8 +419,10 @@ def standard_errors_joint(theta_hat, X, Z, Az, M_iv_est, Xs, prices, shares, nus
     dG0[:, 1+N_instruments:] = np.eye(J*M)
     
     # Reshape it by product and market
-    dgd = dG0.reshape(M, J, 1+N_instruments+J*M)
+    dg = dG0.reshape(M, J, 1+N_instruments+J*M)
     Z_reshaped = Z.reshape(M, J, Nd)
+    #Final "gradient matrix" used in calculation of standard errors. 
+    Gd = np.zeros((Nd, 1+N_instruments+J*M))
     
     
     #####-------------- Preparing supply-side errors
@@ -428,31 +433,27 @@ def standard_errors_joint(theta_hat, X, Z, Az, M_iv_est, Xs, prices, shares, nus
     
     mc_jac = jacobian(calculate_marginal_costs)
     Jmc = mc_jac(elas_hat, "oligopoly", prices, shares, MJN).reshape(J*M, J*J*M)
-    # Jacobian of elasticities evaluated at theta_hat
-    # Use JAX forward differentiation for reduced memory usage
-    Je = jacfwd(calculate_price_elasticity, argnums=0)(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN)
+    #Jacobian of elasticities evaluated at theta_hat
+    ### CRASHES
+    elas_jac = jacobian(calculate_price_elasticity)    
+    Je = elas_jac(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, MJN)
     #Combined Jacobian, used in calculation of supply-side moments
-    dmc_dtheta = Jmc@Je
-    dgs0 = As@dmc_dtheta
-    dgs = dgs0.reshape(M, J, 1+N_instruments+J*M)
-    
+    dmc_dtheta = Je@elas_jac
+    dgs = As@dmc_dtheta
     
     Xs_reshaped = Xs.reshape(M, J, Ns)
     
+    Gs =  np.zeros((Nd, 1+N_instruments+J*M))   
+    #G = np.zeros((N_instruments, 1+N_instruments+J*M))
+
     
-    #Final "gradient matrix" used in calculation of standard errors. 
-    Gd = np.zeros((Nd, 1+N_instruments+J*M))
-    Gs =  np.zeros((Ns, 1+N_instruments+J*M))   
-    # Loop through and calculate standard errors    
-    for i in range(dgd.shape[0]):
-        for j in range(dgd.shape[1]):
-            Gd += np.outer(Z_reshaped[i, j, :], dgd[i, j, :])
-    for i in range(dgs.shape[0]):
-        for j in range(dgs.shape[1]):        
-            Gs += np.outer(Xs_reshaped[i, j, :], dgs[i, j, :])
+    for i in range(dg.shape[0]):
+        for j in range(dg.shape[1]):
+            Gd += np.outer(Z_reshaped[i, j, :], dg[i, j, :])
+            Gs += np.outer(Xs_reshaped[i, j, :], dg[i, j, :])
 
     #Combine gradient of supply and demand moment conditions
-    G = np.concatenate([Gd, Gs], axis=0)/(J*M)
+    G = np.append([Gd, Gs], axis=0)    
     GTG = G.T @ G 
 
     # Using pseudoinverse because there's a bunch of zero columns and rows, corresponding with eta, which make the matrix non-invertible
@@ -472,23 +473,57 @@ def standard_errors_joint(theta_hat, X, Z, Az, M_iv_est, Xs, prices, shares, nus
     se_betas = np.sqrt(np.diag(V_beta)/(J*M))
     se_sigma = np.sqrt(v_sigma/(J*M))
     
-    #Next, use delta method to get standard errors for gamma. 
-    Ms = np.linalg.inv(Xs.T@Xs)@Xs.T
-    V_mc = (dmc_dtheta)@(V_gmm)@(dmc_dtheta).T
-    V_gamma = (Ms)@(V_mc)@(Ms.T)
-    
-    se_gamma = np.sqrt(np.diag(V_gamma)/(J*M))
-    
-    return se_sigma, se_betas, se_gamma
+    return se_sigma, se_betas
 
 
 #=============================================================================#
 # Calculate price elasticities
 #=============================================================================#
+def calculate_price_elasticity_old(betas, alpha, sigma_alpha, xi, X, prices, shares, nus, MJN):
+
+    M, J, N_instruments, N = MJN    
+
+    # Draw alphas and calculate the utilities for each consumer
+    alphas = (sigma_alpha*nus + alpha).reshape(M, N)
+    
+    utilities = (betas.reshape(1, 3) @ X.T).reshape(J*M, -1) - prices*jnp.repeat(alphas, repeats=J, axis=0) + xi
+
+    # Reshape utilities for markets and products
+    utilities_reshaped = utilities.reshape(M, J, N)  # Shape: (M, J, N)
+    
+    # Compute the stabilization constant (max utility per market per individual)
+    max_utilities = jnp.max(utilities_reshaped, axis=1, keepdims=True)  # Shape: (M, 1, N)
+    
+    # Stabilized exponentials
+    exp_utilities = jnp.exp(utilities_reshaped - max_utilities)  # Shape: (M, J, N)
+    
+    # Adjust the "outside option" (1 becomes exp(-max_utilities))
+    outside_option = jnp.exp(-max_utilities)  # Shape: (M, 1, N)
+    
+    # Compute the stabilized denominator
+    sum_exp_utilities = outside_option + exp_utilities.sum(axis=1, keepdims=True)  # Shape: (M, 1, N)
+    
+    # Compute shares
+    ind_shares = exp_utilities / sum_exp_utilities  # Shape: (M, J, N)
+    ind_shares = ind_shares.reshape(J*M, N)
+    
+    # Create a (J*M) x (J*M) matrix that will store the elasticities
+    elasticities = jnp.zeros((J, J, M))
+    
+    # Calculate price elasticities
+    for m in range(M):
+        for j in range(J):
+            for k in range(J):
+                if j == k:
+                    elast = (-prices[J*m + j]/shares[J*m + j])*alphas[m]*ind_shares[J*m + j, :]*(1 - ind_shares[J*m + j, :])
+                else:
+                    elast = (prices[J*m + k]/shares[J*m + j])*alphas[m]*ind_shares[J*m + j, :]*ind_shares[J*m + k, :]
+                elasticities = elasticities.at[j, k, m].set(elast.sum()/N)
+    return elasticities
+
 ##### New version for easier Jacobian calculation in standard errors. 
 #@partial(jit, static_argnums=(6,))  --------- non-hashable static arguments are not supported. One of these things is not a Jax array. 
-@partial(jit, static_argnums=(8,))
-def calculate_price_elasticity(params, xi, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN):
+def calculate_price_elasticity_test2(params, xi, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN):
 
     M, J, N_instruments, N = MJN    
 
@@ -508,8 +543,10 @@ def calculate_price_elasticity(params, xi, X, M_iv_est, prices, shares, nus, nus
     deltas = lax.dynamic_slice(params, (deltas_start,), (params.shape[0] - deltas_start,)).reshape(-1, 1)
     
     utilities = deltas - sigma*nus_on_prices
-        
+    
+    
     utilities_reshaped = utilities.reshape(M, J, N)  # Shape: (M, J, N)
+
 
     max_utilities = jnp.max(utilities_reshaped, axis=1, keepdims=True)
     
@@ -520,43 +557,107 @@ def calculate_price_elasticity(params, xi, X, M_iv_est, prices, shares, nus, nus
     sum_exp_utilities = outside_option + exp_utilities.sum(axis=1, keepdims=True)  # Shape: (M, 1, N)
 
     ind_shares = exp_utilities / sum_exp_utilities  # Shape: (M, J, N)    
+
+    ind_shares0=ind_shares
+    ind_shsres=ind_shares0
+
     ind_shares = ind_shares.reshape(J*M, N)
+    
+    # Create a (J*M) x (J*M) matrix that will store the elasticities
+    elasticities0 = jnp.zeros((J, J, M))
+    
     
     
     #### Trying to vectorize
     #alphas
-    alphas_repeat0 = jnp.repeat(alphas, repeats=J*J, axis=0)    
+    alphas_repeat0 = np.repeat(alphas, repeats=J*J, axis=0)    
     alphas_mat = alphas_repeat0.reshape(J, J, M, N, order='F') #(shape:JxJxMxN). 
     #prices
     prices_rs = prices.reshape(M, J) 
-    prices_repeat = jnp.repeat(prices_rs, repeats=J, axis=1)
-    prices_j = prices_repeat.reshape(M, J, J).transpose(1, 2, 0)
-    prices_j = prices_j[..., np.newaxis]
-    prices_k = prices_j.transpose(1,0,2,3)
+    prices_repeat = np.repeat(prices_rs, repeats=J, axis=1)
+    prices_k = prices_repeat.reshape(M, J, J).transpose(1, 2, 0)
+    prices_k = prices_k[..., np.newaxis]
+    prices_j = prices_k.transpose(1,0,2,3)
     #shares
     ind_shares_rs = ind_shares.reshape(M, J, N)
-    ind_shares_repeat = jnp.repeat(ind_shares_rs, repeats=J, axis=0)
-    ind_shares_k = ind_shares_repeat.reshape(M, J, J, N).transpose(1, 2, 0, 3)
-    ind_shares_j = ind_shares_k.transpose(1,0,2,3)
+    ind_shares_repeat = np.repeat(ind_shares_rs, repeats=J, axis=0)
+    ind_shares_j = ind_shares_repeat.reshape(M, J, J, N).transpose(1, 2, 0, 3)
+    ind_shares_k = ind_shares_j.transpose(1,0,2,3)
+    #ind_shares_k = ind_shares_repeat.reshape(M, J, J, N).transpose(1, 2, 0, 3)
+    #ind_shares_j = ind_shares_k.transpose(1,0,2,3)
     
-    shares_j = jnp.mean(ind_shares_j, axis=3, keepdims=True)
+    shares_j = np.mean(ind_shares_j, axis=3, keepdims=True)
     
     #Shares
     
     #### Elasticities
     elas_own_price = -(prices_j/shares_j)*alphas_mat*ind_shares_j*(1-ind_shares_j)
+    
     elas_cross_price = (prices_k/shares_j)*alphas_mat*ind_shares_j*ind_shares_k
     
-    elas_own_price_mean = jnp.mean(elas_own_price, axis=3)
-    elas_cross_price_mean = jnp.mean(elas_cross_price, axis=3)
-
-    ## Combine the off-diagonal elements of the cross-price elasticities with the diagonal elements of the own-price elasticities. 
-    diag_indices = jnp.arange(J)
-    diag_mask = (diag_indices[:, None] == diag_indices[None, :])[:, :, None]
-
-    elas_mean = jnp.where(diag_mask, elas_own_price_mean, elas_cross_price_mean)    
+    diag_indices = np.arange(J)
+    
+    elas = elas_cross_price
+    elas[diag_indices[:, None], diag_indices[:, None], :, :] =  elas_own_price[diag_indices[:, None], diag_indices[:, None], :, :]
+    
+    elas_mean = np.mean(elas, axis=3)
     
     return elas_mean.flatten() 
+
+
+def calculate_price_elasticity(params, xi, X, M_iv_est, prices, shares, nus, MJN):
+
+    M, J, N_instruments, N = MJN    
+
+    ### Exract parameters
+    sigma_alpha = params[0]
+    deltas = params[1+N_instruments:]
+    ### Calculate betas and alphas
+    betas_and_alpha_hat = (M_iv_est @ deltas)
+    betas = betas_and_alpha_hat[:3]
+    alpha = -betas_and_alpha_hat[3]
+
+    # Draw alphas and calculate the utilities for each consumer
+    alphas = (sigma_alpha*nus + alpha).reshape(M, N)
+    
+    utilities = (betas.reshape(1, 3) @ X.T).reshape(J*M, -1) - prices*jnp.repeat(alphas, repeats=J, axis=0) + xi
+
+    # Reshape utilities for markets and products
+    utilities_reshaped = utilities.reshape(M, J, N)  # Shape: (M, J, N)
+    
+    # Compute the stabilization constant (max utility per market per individual)
+    max_utilities = jnp.max(utilities_reshaped, axis=1, keepdims=True)  # Shape: (M, 1, N)
+    
+    # Stabilized exponentials
+    exp_utilities = jnp.exp(utilities_reshaped - max_utilities)  # Shape: (M, J, N)
+    
+    # Adjust the "outside option" (1 becomes exp(-max_utilities))
+    outside_option = jnp.exp(-max_utilities)  # Shape: (M, 1, N)
+    
+    # Compute the stabilized denominator
+    sum_exp_utilities = outside_option + exp_utilities.sum(axis=1, keepdims=True)  # Shape: (M, 1, N)
+    
+    # Compute shares
+    ind_shares = exp_utilities / sum_exp_utilities  # Shape: (M, J, N)
+    ind_shares = ind_shares.reshape(J*M, N)
+    
+    # Create a (J*M) x (J*M) matrix that will store the elasticities
+    elasticities0 = jnp.zeros((J, J, M))
+    
+    # Calculate price elasticities
+    for m in range(M):
+        for j in range(J):
+            for k in range(J):
+                if j == k:
+                    elast = (-prices[J*m + j]/shares[J*m + j])*alphas[m]*ind_shares[J*m + j, :]*(1 - ind_shares[J*m + j, :])
+                else:
+                    elast = (prices[J*m + k]/shares[J*m + j])*alphas[m]*ind_shares[J*m + j, :]*ind_shares[J*m + k, :]
+                elasticities0 = elasticities0.at[j, k, m].set(elast.sum()/N)
+    
+    elasticities = elasticities0.flatten()
+    #elasticities2 = elasticities.reshape(J,J,M)
+    return elasticities
+
 
 #=============================================================================#
 # Calculate marginal costs

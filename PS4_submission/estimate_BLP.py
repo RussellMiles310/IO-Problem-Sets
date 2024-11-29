@@ -84,17 +84,7 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
         Xs = Z_everything[:, [0, 7, 9]] #### Keep vector of ones, W_cost, and Z_cost.
         As = jnp.eye(Xs.shape[0]) - Xs @ jnp.linalg.inv(Xs.T@Xs) @ Xs.T      
         constraint_g_joint_jac = jacobian(constraint_g_joint)
-        ### Seeing if Joint Jacobian runs 
-        #jac_init = constraint_g_joint_jac(params_init, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, MJN)
 
-        
-    #blp_moment_test = blp_moment_joint(params_init, X, Z, Az, M_iv_est, Xs, As, prices, shares, MJN)
-    #Testing elasticity function
-    #elas_hat = calculate_price_elasticity(params_correct, xi_true, X, M_iv_est, prices, shares, nus, MJN) # Elasticities
-    
-    #elas_jac = jacobian(elas_hat)
-    #jac_test = elas_jac(params_correct, xi_true, X, M_iv_est, prices, shares, nus, MJN)
-    
 
     if delta_solve_init:
         #### Solve initial deltas for improved initial guess. 
@@ -114,8 +104,8 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
         constraints = [
             {
                 'type': 'eq',  # Equality constraint g(x) = eta
-                'fun': lambda x: np.asarray(constraint_g_joint(x, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, MJN)),  # Convert to NumPy
-                'jac': lambda x: np.asarray(constraint_g_joint_jac(x, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, MJN))  # Convert Jacobian to NumPy
+                'fun': lambda x: np.asarray(constraint_g_joint(x, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN)),  # Convert to NumPy
+                'jac': lambda x: np.asarray(constraint_g_joint_jac(x, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN))  # Convert Jacobian to NumPy
             },
             {
                 'type': 'eq',  # Equality constraint s(x) = shares
@@ -149,7 +139,7 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
     warnings.filterwarnings("ignore", message="delta_grad == 0.0. Check if the approximated function is linear.")
 
     # Solve optimization
-    tolerance = 1e-40
+    tolerance = 1e-20
     W = np.eye(N_instruments)
 
     result = minimize(
@@ -190,13 +180,13 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
     #Calculate gamma if we're solving the supply-side joint version
     if mode == "supply_joint":
         ### Calculate gamma_hat
-        elas = calculate_price_elasticity(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, MJN)
+        elas = calculate_price_elasticity(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN)
         mc = calculate_marginal_costs(elas, "oligopoly", prices, shares, MJN)
         gamma_hat = (np.linalg.inv(Xs.T@Xs)@Xs.T)@mc 
 
-    print(beta_hat)
-    print(alpha_hat)
-    print(sigma_alpha_hat)
+    #(beta_hat)
+    #print(alpha_hat)
+    #print(sigma_alpha_hat)
 
     print("#============================================================================#")
     print("#== Optimal parameters found. Next, calculating standard errors:")
@@ -205,9 +195,9 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
 
     #========== Calculate the standard errors =====================================================================================================#
     if mode == "supply_joint":
-        se_sigma, se_betas = standard_errors_joint(theta_hat, Z, Az, M_iv_est, shares, nus_on_prices, MJN)
-        se_sigma, se_betas = 0
-        se = np.append([se_sigma], [se_betas])
+        #se_sigma, se_betas = standard_errors_joint(theta_hat, Z, Az, M_iv_est, shares, nus_on_prices, MJN)
+        se_sigma, se_betas, se_gamma = standard_errors_joint(theta_hat, X, Z, Az, M_iv_est, Xs, prices, shares, nus_on_prices, nus, MJN)
+        se = np.concatenate([[se_sigma], se_betas, se_gamma])
 
     else: 
         se_sigma, se_betas = standard_errors(theta_hat, Z, Az, M_iv_est, shares, nus_on_prices, MJN)
@@ -218,12 +208,12 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
     #Predicted deltas, xis, and moment conditions
     beta_true_array = np.array(beta_true)
     #True value of the elasticities
-    elasticities_true = calculate_price_elasticity(params_correct, xi_true, X, M_iv_est, prices, shares, nus, MJN)
+    elasticities_true = calculate_price_elasticity(params_correct, xi_true, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN)
     #Mean of the true value of elasticities
     mean_elasticities_true = elasticities_true.reshape(J, J, M).mean(axis=2)
     #######
     #Predicted value of the elasticities
-    elasticities_hat = calculate_price_elasticity(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, MJN)
+    elasticities_hat = calculate_price_elasticity(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN)
     #Mean of the true value of elasticities
     mean_elasticities_hat = elasticities_hat.reshape(J, J, M).mean(axis=2)
 
@@ -262,6 +252,11 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
         'cs': {'true': cs_true, 'hat': cs_hat}, 
         'optim_results': result
     }
+    if mode == "supply_joint":
+        OUT["gamma_hat"] = gamma_hat
+        OUT["se_names"] = ["sigma_alpha", "beta0", "beta1", "beta2", "alpha"]
+    else:
+        OUT["se_names"] = ["sigma_alpha", "beta0", "beta1", "beta2", "alpha", "gamma0", "gamma1", "gamma2"]
 
     print("#============================================================================#")
     print("#== BLP Estimation Complete")
