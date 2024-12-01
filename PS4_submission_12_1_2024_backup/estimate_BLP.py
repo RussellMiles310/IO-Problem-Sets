@@ -19,7 +19,7 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
     elif mode == "supply_W":
         N_instruments = 8
     elif mode == "supply_joint":
-        N_instruments = 11
+        N_instruments = 10
 
 
     #Initial guesses for eta and delta
@@ -64,11 +64,11 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
     if mode == "demand_side":
         Z = Z_everything[:, 0:7]
     elif mode == "p_exercise":
-        Z = Z_everything[:, [0, 1, 2, 8]] #Includes x1, x2, BLP moments in X, and p
+        Z = Z_everything[:, [0, 1, 2, 8]]
     elif mode == "supply_W":
-        Z = Z_everything[:, 0:8] #Includes x1, x2, BLP moments in X, and w^cost
+        Z = Z_everything[:, 0:8]
     elif mode == "supply_joint":
-        Z = Z_everything[:, 0:8] #Includes x1, x2, BLP moments in X, and w^cost
+        Z = Z_everything[:, 0:7]
         
     #Projection matrix onto the instruments
     Pz = Z @ jnp.linalg.inv(Z.T @ Z) @ Z.T
