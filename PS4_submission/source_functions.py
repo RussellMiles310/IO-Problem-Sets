@@ -541,6 +541,50 @@ def calculate_price_elasticity(params, xi, X, M_iv_est, prices, shares, nus, nus
     
     return elas_mean.flatten() 
 
+#### Old version, for troubleshooting
+def calculate_price_elasticity_old(betas, alpha, sigma_alpha, xi, X, prices, shares, nus, MJN):
+
+    M, J, N_instruments, N = MJN    
+
+    # Draw alphas and calculate the utilities for each consumer
+    alphas = (sigma_alpha*nus + alpha).reshape(M, N)
+    
+    utilities = (betas.reshape(1, 3) @ X.T).reshape(J*M, -1) - prices*jnp.repeat(alphas, repeats=J, axis=0) + xi
+
+    # Reshape utilities for markets and products
+    utilities_reshaped = utilities.reshape(M, J, N)  # Shape: (M, J, N)
+    
+    # Compute the stabilization constant (max utility per market per individual)
+    max_utilities = jnp.max(utilities_reshaped, axis=1, keepdims=True)  # Shape: (M, 1, N)
+    
+    # Stabilized exponentials
+    exp_utilities = jnp.exp(utilities_reshaped - max_utilities)  # Shape: (M, J, N)
+    
+    # Adjust the "outside option" (1 becomes exp(-max_utilities))
+    outside_option = jnp.exp(-max_utilities)  # Shape: (M, 1, N)
+    
+    # Compute the stabilized denominator
+    sum_exp_utilities = outside_option + exp_utilities.sum(axis=1, keepdims=True)  # Shape: (M, 1, N)
+    
+    # Compute shares
+    ind_shares = exp_utilities / sum_exp_utilities  # Shape: (M, J, N)
+    ind_shares = ind_shares.reshape(J*M, N)
+    
+    # Create a (J*M) x (J*M) matrix that will store the elasticities
+    elasticities = jnp.zeros((J, J, M))
+    
+    # Calculate price elasticities
+    for m in range(M):
+        for j in range(J):
+            for k in range(J):
+                if j == k:
+                    elast = (-prices[J*m + j]/shares[J*m + j])*alphas[m]*ind_shares[J*m + j, :]*(1 - ind_shares[J*m + j, :])
+                else:
+                    elast = (prices[J*m + k]/shares[J*m + j])*alphas[m]*ind_shares[J*m + j, :]*ind_shares[J*m + k, :]
+                elasticities = elasticities.at[j, k, m].set(elast.sum()/N)
+                
+    return elasticities
+
 #=============================================================================#
 # Calculate marginal costs
 #=============================================================================#

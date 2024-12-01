@@ -183,6 +183,10 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
         elas = calculate_price_elasticity(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN)
         mc = calculate_marginal_costs(elas, "oligopoly", prices, shares, MJN)
         gamma_hat = (np.linalg.inv(Xs.T@Xs)@Xs.T)@mc 
+        
+        elas_old = calculate_price_elasticity_old(beta_hat, alpha_hat, sigma_alpha_hat, xi_hat, X, prices, shares, nus, MJN)
+        elas_old=elas_old.flatten()
+        mc_old = calculate_marginal_costs(elas_old, "oligopoly", prices, shares, MJN)
 
     #(beta_hat)
     #print(alpha_hat)
