@@ -589,12 +589,18 @@ def calculate_price_elasticity_old(betas, alpha, sigma_alpha, xi, X, prices, sha
 # Calculate marginal costs
 #=============================================================================#
 
-def calculate_marginal_costs(elasticities0, conduct, prices, shares, MJN):
+def calculate_marginal_costs(elasticities, conduct, prices, shares, MJN):
         
     M, J, N_instruments, N = MJN    
 
     # Reshape elasticities to (J, J, M) shape
-    elasticities = elasticities0.reshape(J,J,M)
+    elasticities_reshaped = elasticities.reshape(J, J, M)
+
+    # Reshape shares
+    shares_reshaped = shares.reshape(M, J).T
+
+    # Reshape prices
+    prices_reshaped = prices.reshape(M, J).T
 
     if conduct == "perfect":
         return prices
@@ -609,8 +615,12 @@ def calculate_marginal_costs(elasticities0, conduct, prices, shares, MJN):
     mc = jnp.zeros(J*M).reshape(J*M, -1)
     
     for m in range(M):
-            elast_mkt = elasticities[:, :, m].reshape(J, J)
-            mc_mkt = jnp.linalg.inv(ownership*elast_mkt) @ shares[J*m:J*m + J].reshape(J, -1) + prices[J*m:J*m + J].reshape(J, -1)
+            elast_mkt = elasticities_reshaped[:, :, m].reshape(J, J)
+            shares_mkt = shares_reshaped[:, m]
+            prices_mkt = prices_reshaped[:, m]
+            p_over_s = (1/shares_mkt).reshape(J, -1) @ prices_mkt.reshape(-1, J)
+            s_partial_p = elast_mkt/p_over_s
+            mc_mkt = jnp.linalg.inv(ownership*s_partial_p.T) @ shares_mkt.reshape(J, -1) + prices_mkt.reshape(J, -1)
             mc = mc.at[J*m:J*m + J].add(mc_mkt)
 
     return mc
