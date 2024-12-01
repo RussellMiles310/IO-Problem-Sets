@@ -368,7 +368,7 @@ def standard_errors(thetastar, Z, Az, M_iv_est, shares, nus_on_prices, MJN):
 #=============================================================================#
 # Calculate price elasticities
 #=============================================================================#
-def calculate_price_elasticity(betas, alpha, sigma_alpha, xi, X, prices, shares, nus, MJN):
+def calculate_price_elasticity_old(betas, alpha, sigma_alpha, xi, X, prices, shares, nus, MJN):
 
     M, J, N_instruments, N = MJN    
 
