@@ -589,28 +589,20 @@ def calculate_price_elasticity_old(betas, alpha, sigma_alpha, xi, X, prices, sha
 # Calculate marginal costs
 #=============================================================================#
 
-def calculate_marginal_costs(elasticities, conduct, prices, shares, MJN):
-        
-    M, J, N_instruments, N = MJN    
+def calculate_marginal_costs(params, ownership, xi, X, M_iv_est, prices, nus, nus_on_prices, MJN):
+    
+    M, J, N_instruments, N = MJN
 
-    # Reshape elasticities to (J, J, M) shape
-    elasticities_reshaped = elasticities.reshape(J, J, M)
-
-    # Reshape shares
+    # Calculate shares and reshape
+    shares = s(params, nus_on_prices, MJN)
     shares_reshaped = shares.reshape(M, J).T
 
     # Reshape prices
     prices_reshaped = prices.reshape(M, J).T
 
-    if conduct == "perfect":
-        return prices
-    elif conduct == "collusion":
-        ownership = jnp.ones((J, J))
-    elif conduct == "oligopoly":
-        ownership = jnp.eye(J)
-    else:
-        print("The specified conduct is not an option ('perfect', 'collusion', 'oligopoly').")
-        print("Returning the vector of prices (i.e., the marginal costs for the perfect competition case).")
+    # Calculate elasticities and reshape to (J, J, M)
+    elasticities = calculate_price_elasticity(params, xi, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN)
+    elasticities_reshaped = elasticities.reshape(J, J, M)
         
     mc = jnp.zeros(J*M).reshape(J*M, -1)
     
