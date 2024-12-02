@@ -884,6 +884,9 @@ def calculate_welfare(data, alphas, beta, epsilons):
         product_utilities = np.concatenate([product_utilities, zero_column], axis=1)
 
         mkt_welfare = np.amax(product_utilities, axis=1).reshape(500, -1)
+
+        # Divide by alpha_i's to get the surplus in monetary units
+        mkt_welfare = mkt_welfare/alphas.iloc[market_id-1]
         
         if market_id == 1:
             market_welfares = mkt_welfare
