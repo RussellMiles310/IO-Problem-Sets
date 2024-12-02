@@ -937,4 +937,110 @@ def plot_two_histograms(data1, data2, bins=500, labels=('Data 1', 'Data 2')):
     plt.tight_layout()
     plt.show()
 
+def predict_prices_and_shares(ownership, mc, betas, alpha, sigma_alpha, xi, X, MJN):
+    
+    M, J, N_instruments, N = MJN
 
+    # Draw alphas and calculate the utilities for each consumer
+    alphas = (sigma_alpha*np.random.lognormal(0.0, 1.0, M*N) + alpha).reshape(M, N)
+
+    def predict_ind_shares(p):
+        utilities = (betas.reshape(1, 3) @ X.T).reshape(J*M, -1) - p.reshape(-1, 1)*np.repeat(alphas, repeats=J, axis=0) + xi
+
+        # Reshape utilities for markets and products
+        utilities_reshaped = utilities.reshape(M, J, N)  # Shape: (M, J, N)
+    
+        # Compute the stabilization constant (max utility per market per individual)
+        max_utilities = jnp.max(utilities_reshaped, axis=1, keepdims=True)  # Shape: (M, 1, N)
+    
+        # Stabilized exponentials
+        exp_utilities = jnp.exp(utilities_reshaped - max_utilities)  # Shape: (M, J, N)
+    
+        # Adjust the "outside option" (1 becomes exp(-max_utilities))
+        outside_option = jnp.exp(-max_utilities)  # Shape: (M, 1, N)
+    
+        # Compute the stabilized denominator
+        sum_exp_utilities = outside_option + exp_utilities.sum(axis=1, keepdims=True)  # Shape: (M, 1, N)
+
+        # Compute shares
+        ind_shares = exp_utilities / sum_exp_utilities  # Shape: (M, J, N)
+
+        return ind_shares.reshape(J*M, N)
+    
+    def zeta(p):
+        
+        ind_shares = predict_ind_shares(p)
+        mkt_shares = ind_shares.mean(axis=1)
+
+        lambda_diag = (ind_shares*np.repeat(-alphas, repeats=J, axis=0)).sum(axis=1)/N
+        
+        # Reshape into a (J*M, J) matrix with block diagonal structure
+        blocks = []
+        blocks_inv = []
+        for i in range(0, len(lambda_diag), J):  # Iterate over the vector in steps of 3
+            diag_matrix = np.diag(lambda_diag[i:i+J])  # Create a diagonal matrix from 3 elements
+            diag_matrix_inv = np.linalg.inv(diag_matrix)
+            blocks.append(diag_matrix)
+            blocks_inv.append(diag_matrix_inv)  # Append to the list of blocks
+        
+        # Stack the blocks vertically
+        lambda_mat = np.vstack(blocks)
+        lambda_mat_inv = np.vstack(blocks_inv)
+
+        gamma_mat = np.zeros((M, J, J))
+        for m in range(M):
+            for j in range(J):
+                for k in range(J):
+                    gamma_mat[m, j, k] = (ind_shares[J*m + j, :]*ind_shares[J*m + k, :]*(-alphas[m, :])).mean()
+
+        gamma_mat = gamma_mat.reshape(J*M, J)
+        
+        zeta = np.zeros(J*M)
+        for m in range(M):
+            zeta[m*J:m*J + J] = (lambda_mat_inv[m*J:m*J + J, :] @ (ownership*gamma_mat[m*J:m*J + J, :]) @ (p[m*J:m*J + J].reshape(-1, 1) - mc[m*J:m*J + J]) 
+                                - lambda_mat_inv[m*J:m*J + J, :] @ mkt_shares[m*J:m*J + J].reshape(-1, 1)).reshape(-1)
+
+        return zeta, lambda_mat
+
+    def contraction_mapping(zeta, p0, tol=1e-8, max_iter=1000):
+        """
+        Implements the contraction mapping: p <- c + zeta(p).
+    
+        Parameters:
+        - zeta: function zeta(p), mapping p to a vector or scalar of the same shape as p.
+        - p0: initial guess for p (scalar or array).
+        - tol: convergence tolerance (default 1e-8).
+        - max_iter: maximum number of iterations (default 1000).
+    
+        Returns:
+        - p: converged value of p.
+        """
+        p = p0
+        for n_iter in range(max_iter):
+            zeta_vec, lambda_mat = zeta(p)
+            p_new = mc.reshape(-1) + zeta_vec  # Apply the contraction mapping
+
+            # Reshape into groups of 3x3 matrices and 3x1 vectors
+            lambda_mat_grouped = lambda_mat.reshape(-1, J, J)  # Shape: (100, 3, 3)
+            p_grouped = (p_new - p).reshape(-1, 3, 1)  # Shape: (100, 3, 1)
+            
+            # Perform batch matrix-vector multiplication
+            norm_grouped = np.matmul(lambda_mat_grouped, p_grouped)  # Shape: (100, 3, 1)
+            
+            # Flatten the result back into a vector
+            norm_vector = norm_grouped.reshape(-1)  # Shape: (300,)
+            norm = np.linalg.norm(norm_vector, np.inf)
+            print(f"Iteration {n_iter}. Norm: {norm}.")
+            if norm < tol:  # Check for convergence
+                print("Contraction mapping converged, found prices that satisfy the FOC.")
+                print("Iterations:", n_iter)
+                return p_new
+            p = p_new
+        raise RuntimeError("Contraction mapping did not converge within the maximum number of iterations.")
+
+    p_init = np.ones(J*M)
+    
+    res_prices = contraction_mapping(zeta, p_init)
+    res_shares = predict_ind_shares(res_prices).sum(axis=1)/N
+    
+    return res_prices, res_shares

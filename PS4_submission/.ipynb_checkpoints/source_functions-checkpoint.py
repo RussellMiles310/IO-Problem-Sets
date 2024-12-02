@@ -195,7 +195,7 @@ def blp_moment(params, Z, Az, MJN):
 # Az: Annihilator matrix for the demand-side, used to recover xis from deltas. 
 # Xs: matrix of supply-side regressors: [1, wcost, zcost]
 # As: Annihilator matrix for the suppply side, used to recover the marginal cost residual, omega. 
-def blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN, conduct = "oligopoly"):
+def blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN, ownership):
     """
     Computes the BLP moment vector using vectorized instruments.
     
@@ -218,15 +218,14 @@ def blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nu
     moment_demand_side = jnp.sum(xis*Z, axis=0)  # Shape: (instrument_features,)
     
     ###### Next: Supply-side moments
-    # Calculate elasticities and marginal cost
-    elas = calculate_price_elasticity(params, xis, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN)
     
-    #elas = calculate_price_elasticity(betas_hat, alpha_hat, sigma_alpha, xis, X, prices, shares, nus, MJN)
-    mc = calculate_marginal_costs(elas, conduct, prices, shares, MJN)
+    if not ownership.any(): ## I am coding perfect competition as an ownership matrix of zeros. 
+        mc=prices ### Perfect competition case. 
+    else:
+        mc = calculate_marginal_costs(params, ownership, xis, X, M_iv_est, prices, nus, nus_on_prices, MJN)
     # Find the residual of the marginal cost equation
     omegas = As @ mc
     moment_supply_side = jnp.sum(omegas*Xs, axis=0)  # Shape: (instrument_features,)
-
     #Put the moments together
     moments_all = jnp.concatenate([moment_demand_side, moment_supply_side], axis = 0)
     return (moments_all / (J*M))
@@ -250,14 +249,13 @@ def constraint_g(params, Z, Az, MJN):
     return g_xi - eta
 
 
-#blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, MJN, conduct = "oligopoly")
 #=============================================================================#
 # constraint_g_joint
 #=============================================================================#
 #@partial(jit, static_argnums=(10,))
-def constraint_g_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN):
-    _, _, N_instruments, _ = MJN
-    g_xi = blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN)
+def constraint_g_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN, ownership):
+    _, _, N_instruments, _ = MJN        
+    g_xi = blp_moment_joint(params, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN, ownership)
     eta = params[1:1+N_instruments]
     return g_xi - eta
 
@@ -362,105 +360,188 @@ def standard_errors(thetastar, Z, Az, M_iv_est, shares, nus_on_prices, MJN):
 #=============================================================================#
 # Calculate standard errors, joint estimation
 #=============================================================================#
-def standard_errors_joint(theta_hat, X, Z, Az, M_iv_est, Xs, prices, shares, nus_on_prices, nus, MJN):
+def standard_errors_joint(theta_hat, X, Z, Az, M_iv_est, Xs, prices, shares, nus_on_prices, nus, MJN, ownership):
 
     M, J, N_instruments, N = MJN
         
     Nd = Z.shape[1]        #Number of demand-side instruments
-    Ns = N_instruments-Nd  #Number of supply-side instruments
+    Ns = Xs.shape[1] #Number of supply-side instruments
+      
     
     # Predicted deltas, xis
     delta_hat = theta_hat[1+N_instruments:].reshape(-1, 1)
     xi_hat = np.array(Az@delta_hat)
     
-    ### Demand-side moment conditions
-    g0_demand = np.array(Z*xi_hat) # Vector of moment conditions, (J*M x 7)
-    
-    ### Supply-side moments
-    As = np.eye(Xs.shape[0]) - Xs@np.linalg.inv(Xs.T@Xs)@Xs.T #supply-side annihilator matrix
-    elas_hat = calculate_price_elasticity(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN) # Elasticities
-    mc_hat = calculate_marginal_costs(elas_hat, "oligopoly", prices, shares, MJN)                       # Marginal Costs
-    
-    ### Supply-side moment conditions
-    g0_supply = np.array(Xs*mc_hat) # Vector of moment conditions, (J*M x 7)
-    
-    ### All moments (JM x 10)
-    g0 = np.concatenate([g0_demand, g0_supply], axis=1)
-
-    # Covariance matrix of moment conditions ("meat" of the sandwich formula)
-    Bbar = np.cov(g0.T)
-      
-    #####-------------- Now, calculating demand-side standard errors
-    # Gradient of shares evaluated at the solution
-    grad_s_star = np.array(constraint_s_jac(theta_hat, shares, nus_on_prices, MJN))
-    
-    # Calculate derivative terms
-    ds_ddelta = grad_s_star[:, 1+N_instruments:]
-    ds_dsigma = grad_s_star[:, 0]
-    ddelta_dsigma = -np.linalg.solve(ds_ddelta, ds_dsigma)
-
-    # Constructing the gradient matrix, G
-    dgd0 = np.zeros((J*M, 1+N_instruments+J*M))
-    dgd0[:, 0] = ddelta_dsigma
-    dgd0[:, 1+N_instruments:] = np.eye(J*M)
-    
-    # Reshape it by product and market
-    dgd = dgd0.reshape(M, J, 1+N_instruments+J*M)
-    Z_reshaped = Z.reshape(M, J, Nd)
+    ### This means we are a conduct case other than perfect competition
+    if ownership.any():
+        ### Demand-side moment conditions
+        g0_demand = np.array(Z*xi_hat) # Vector of moment conditions, (J*M x 7)
         
-    #####-------------- Preparing supply-side errors
-    #Jacobian of marginal costs evaluated at theta_hat  
-    mc_jac = jacobian(calculate_marginal_costs)
-    Jmc = mc_jac(elas_hat, "oligopoly", prices, shares, MJN).reshape(J*M, J*J*M)
-    # Jacobian of elasticities evaluated at theta_hat
-    # Use JAX forward differentiation for reduced memory usage
-    Je = jacfwd(calculate_price_elasticity, argnums=0)(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN)
-    # Combined Jacobian of marginal costs with respect to theta
-    # Used in calculation of supply-side moments
-    dmc_dtheta = Jmc@Je
-    # This thing (As@dmc_dtheta) gives domega_dtheta, the derivative of the supply-side residual. 
-    dgs0 = As@dmc_dtheta
-    dgs = dgs0.reshape(M, J, 1+N_instruments+J*M)
-    Xs_reshaped = Xs.reshape(M, J, Ns)
+        ### Supply-side moments
+        As = np.eye(Xs.shape[0]) - Xs@np.linalg.inv(Xs.T@Xs)@Xs.T #supply-side annihilator matrix
+        #elas_hat = calculate_price_elasticity(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN) # Elasticities
+        mc_hat = calculate_marginal_costs(theta_hat, ownership, xi_hat, X, M_iv_est, prices, nus, nus_on_prices, MJN)                      # Marginal Costs
         
-    # Final "gradient matrix G" used in calculation of standard errors. 
-    Gd = np.zeros((Nd, 1+N_instruments+J*M))
-    Gs =  np.zeros((Ns, 1+N_instruments+J*M))   
-    # Loop through and calculate standard errors    
-    for i in range(dgd.shape[0]):
-        for j in range(dgd.shape[1]):
-            Gd += np.outer(Z_reshaped[i, j, :], dgd[i, j, :])
-    for i in range(dgs.shape[0]):
-        for j in range(dgs.shape[1]):        
-            Gs += np.outer(Xs_reshaped[i, j, :], dgs[i, j, :])
-
-    #Combine gradient of supply and demand moment conditions
-    G = np.concatenate([Gd, Gs], axis=0)/(J*M)
-    GTG = G.T @ G 
-
-    # Using pseudoinverse because there's a bunch of zero columns and rows, corresponding with eta, which make the matrix non-invertible
-    GTG_inv = np.linalg.pinv(GTG)
+        ### Supply-side moment conditions
+        g0_supply = np.array(Xs*mc_hat) # Vector of moment conditions, (J*M x 7)
+        
+        ### All moments (JM x 10)
+        g0 = np.concatenate([g0_demand, g0_supply], axis=1)
     
-    # Variance-covariance matrix of the GMM estimates
-    V_gmm = np.array(GTG_inv @ (G.T) @ Bbar @ G @ GTG_inv)
+        # Covariance matrix of moment conditions ("meat" of the sandwich formula)
+        Bbar = np.cov(g0.T)
+          
+        #####-------------- Now, calculating demand-side standard errors
+        # Gradient of shares evaluated at the solution
+        grad_s_star = np.array(constraint_s_jac(theta_hat, shares, nus_on_prices, MJN))
+        
+        # Calculate derivative terms
+        ds_ddelta = grad_s_star[:, 1+N_instruments:]
+        ds_dsigma = grad_s_star[:, 0]
+        ddelta_dsigma = -np.linalg.solve(ds_ddelta, ds_dsigma)
     
-    # Get the parts of the VCV we care about
-    v_sigma = V_gmm[0,0]
-    V_delta = V_gmm[1+N_instruments:, 1+N_instruments:]
+        # Constructing the gradient matrix, G
+        dgd0 = np.zeros((J*M, 1+N_instruments+J*M))
+        dgd0[:, 0] = ddelta_dsigma
+        dgd0[:, 1+N_instruments:] = np.eye(J*M)
+        
+        # Reshape it by product and market
+        dgd = dgd0.reshape(M, J, 1+N_instruments+J*M)
+        Z_reshaped = Z.reshape(M, J, Nd)
+            
+        #####-------------- Preparing supply-side errors
+        #Jacobian of marginal costs evaluated at theta_hat  
+        mc_jac = jacobian(calculate_marginal_costs)
+        Jmc = mc_jac(theta_hat, ownership, xi_hat, X, M_iv_est, prices, nus, nus_on_prices, MJN).reshape(J*M, J*M+N_instruments+1) 
+        # Combined Jacobian of marginal costs with respect to theta
+        dmc_dtheta = Jmc
+        # This thing (As@dmc_dtheta) gives domega_dtheta, the derivative of the supply-side residual. 
+        dgs0 = As@dmc_dtheta
+        dgs = dgs0.reshape(M, J, 1+N_instruments+J*M)
+        Xs_reshaped = Xs.reshape(M, J, Ns)
+            
+        # Final "gradient matrix G" used in calculation of standard errors. 
+        Gd = np.zeros((Nd, 1+N_instruments+J*M))
+        Gs =  np.zeros((Ns, 1+N_instruments+J*M))   
+        # Loop through and calculate standard errors    
+        for i in range(dgd.shape[0]):
+            for j in range(dgd.shape[1]):
+                Gd += np.outer(Z_reshaped[i, j, :], dgd[i, j, :])
+        for i in range(dgs.shape[0]):
+            for j in range(dgs.shape[1]):        
+                Gs += np.outer(Xs_reshaped[i, j, :], dgs[i, j, :])
     
-    # Get the variance covariance matrix of beta
-    V_beta = np.array(M_iv_est @ V_delta @ (M_iv_est.T))
-
-    #Next, use delta method to get standard errors for gamma. 
-    Ms = np.linalg.inv(Xs.T@Xs)@Xs.T
-    V_mc = (dmc_dtheta)@(V_gmm)@(dmc_dtheta).T
-    V_gamma = (Ms)@(V_mc)@(Ms.T)
+        #Combine gradient of supply and demand moment conditions
+        G = np.concatenate([Gd, Gs], axis=0)/(J*M)
+        GTG = G.T @ G 
     
-    # Get the standard errors
-    se_betas = np.sqrt(np.diag(V_beta)/(J*M))
-    se_sigma = np.sqrt(v_sigma/(J*M))
-    se_gamma = np.sqrt(np.diag(V_gamma)/(J*M))
+        # Using pseudoinverse because there's a bunch of zero columns and rows, corresponding with eta, which make the matrix non-invertible
+        GTG_inv = np.linalg.pinv(GTG)
+        
+        # Variance-covariance matrix of the GMM estimates
+        V_gmm = np.array(GTG_inv @ (G.T) @ Bbar @ G @ GTG_inv)
+        
+        # Get the parts of the VCV we care about
+        v_sigma = V_gmm[0,0]
+        V_delta = V_gmm[1+N_instruments:, 1+N_instruments:]
+        
+        # Get the variance covariance matrix of beta
+        V_beta = np.array(M_iv_est @ V_delta @ (M_iv_est.T))
     
+        #Next, use delta method to get standard errors for gamma. 
+        Ms = np.linalg.inv(Xs.T@Xs)@Xs.T
+        V_mc = (dmc_dtheta)@(V_gmm)@(dmc_dtheta).T
+        V_gamma = (Ms)@(V_mc)@(Ms.T)
+        
+        # Get the standard errors
+        se_betas = np.sqrt(np.diag(V_beta)/(J*M))
+        se_sigma = np.sqrt(v_sigma/(J*M))
+        se_gamma = np.sqrt(np.diag(V_gamma)/(J*M))
+        
+    else: ### Perfect competition case
+        #Demand side moment not dependent on gammas. 
+                
+        ### Demand-side moment conditions
+        g0 = np.array(Z*xi_hat) # Vector of moment conditions, (J*M x 7)
+            
+        # Covariance matrix of moment conditions ("meat" of the sandwich formula)
+        Bbar = np.cov(g0.T)
+          
+        #####-------------- Now, calculating demand-side standard errors
+        # Gradient of shares evaluated at the solution
+        grad_s_star = np.array(constraint_s_jac(theta_hat, shares, nus_on_prices, MJN))
+        
+        # Calculate derivative terms
+        ds_ddelta = grad_s_star[:, 1+N_instruments:]
+        ds_dsigma = grad_s_star[:, 0]
+        ddelta_dsigma = -np.linalg.solve(ds_ddelta, ds_dsigma)
+    
+        # Constructing the gradient matrix, G
+        dgd0 = np.zeros((J*M, 1+N_instruments+J*M))
+        dgd0[:, 0] = ddelta_dsigma
+        dgd0[:, 1+N_instruments:] = np.eye(J*M)
+        
+        # Reshape it by product and market
+        dgd = dgd0.reshape(M, J, 1+N_instruments+J*M)
+        Z_reshaped = Z.reshape(M, J, Nd)
+            
+        #####-------------- Preparing supply-side errors
+        # Final "gradient matrix G" used in calculation of standard errors. 
+        Gd = np.zeros((Nd, 1+N_instruments+J*M))
+        # Loop through and calculate standard errors    
+        for i in range(dgd.shape[0]):
+            for j in range(dgd.shape[1]):
+                Gd += np.outer(Z_reshaped[i, j, :], dgd[i, j, :])
+    
+        #Combine gradient of supply and demand moment conditions
+        G = Gd/(J*M)
+        GTG = G.T @ G 
+    
+        # Using pseudoinverse because there's a bunch of zero columns and rows, corresponding with eta, which make the matrix non-invertible
+        GTG_inv = np.linalg.pinv(GTG)
+        
+        # Variance-covariance matrix of the GMM estimates
+        V_gmm = np.array(GTG_inv @ (G.T) @ Bbar @ G @ GTG_inv)
+        
+        # Get the parts of the VCV we care about
+        v_sigma = V_gmm[0,0]
+        V_delta = V_gmm[1+N_instruments:, 1+N_instruments:]
+        
+        # Get the variance covariance matrix of beta
+        V_beta = np.array(M_iv_est @ V_delta @ (M_iv_est.T))
+        
+        se_betas = np.sqrt(np.diag(V_beta)/(J*M))
+        se_sigma = np.sqrt(v_sigma/(J*M))
+        
+        
+        #Supply-side moment standard errors come directly from the SE formulas of linear regression
+        #mc=p is no longer a random variable. 
+        XsTXs_inv = np.linalg.inv(Xs.T @ Xs)
+        #gamma_hat = XTX_inv @ (Xs.T) @ prices
+        #residuals
+        #omega_hat = prices - Xs @ gamma_hat
+        #n, k = Xs.shape
+        # Outer product of residuals and rows of X
+        #robust_sum = np.zeros((k, k))
+        #for i in range(n):
+        #    Xi = X[i, :].reshape(-1, 1)  # Row vector of X as column
+        #    robust_sum += (omega_hat[i] ** 2) * (Xi @ Xi.T)
+        # Robust variance-covariance matrix
+        #var_gamma_robust = XTX_inv @ robust_sum @ XTX_inv
+        #robust_standard_errors = np.sqrt(np.diag(var_gamma_robust))
+        ### Try non-robust SEs
+        # Step 1: Calculate regression coefficients (gamma)
+        gamma_hat = XsTXs_inv @ Xs.T @ prices
+        # Step 2: Calculate residuals
+        omega_hat = prices - Xs @ gamma_hat
+        # Step 3: Estimate variance of residuals (sigma^2)
+        n, k = X.shape
+        sigma2 = (omega_hat.T @ omega_hat) / (n - k)
+        # Step 4: Calculate variance-covariance matrix of gamma
+        var_gamma = sigma2 * np.linalg.inv(Xs.T @ Xs)
+        # Step 5: Standard errors of gamma
+        se_gamma = np.sqrt(np.diag(var_gamma))
+               
     return se_sigma, se_betas, se_gamma
 
 
@@ -856,4 +937,110 @@ def plot_two_histograms(data1, data2, bins=500, labels=('Data 1', 'Data 2')):
     plt.tight_layout()
     plt.show()
 
+def predict_prices_and_shares(ownership, mc, betas, alpha, sigma_alpha, xi, X, MJN):
+    
+    M, J, N_instruments, N = MJN
 
+    # Draw alphas and calculate the utilities for each consumer
+    alphas = (sigma_alpha*np.random.lognormal(0.0, 1.0, M*N) + alpha).reshape(M, N)
+
+    def predict_ind_shares(p):
+        utilities = (betas.reshape(1, 3) @ X.T).reshape(J*M, -1) - p.reshape(-1, 1)*np.repeat(alphas, repeats=J, axis=0) + xi
+
+        # Reshape utilities for markets and products
+        utilities_reshaped = utilities.reshape(M, J, N)  # Shape: (M, J, N)
+    
+        # Compute the stabilization constant (max utility per market per individual)
+        max_utilities = jnp.max(utilities_reshaped, axis=1, keepdims=True)  # Shape: (M, 1, N)
+    
+        # Stabilized exponentials
+        exp_utilities = jnp.exp(utilities_reshaped - max_utilities)  # Shape: (M, J, N)
+    
+        # Adjust the "outside option" (1 becomes exp(-max_utilities))
+        outside_option = jnp.exp(-max_utilities)  # Shape: (M, 1, N)
+    
+        # Compute the stabilized denominator
+        sum_exp_utilities = outside_option + exp_utilities.sum(axis=1, keepdims=True)  # Shape: (M, 1, N)
+
+        # Compute shares
+        ind_shares = exp_utilities / sum_exp_utilities  # Shape: (M, J, N)
+
+        return ind_shares.reshape(J*M, N)
+    
+    def zeta(p):
+        
+        ind_shares = predict_ind_shares(p)
+        mkt_shares = ind_shares.mean(axis=1)
+
+        lambda_diag = (ind_shares*np.repeat(-alphas, repeats=J, axis=0)).sum(axis=1)/N
+        
+        # Reshape into a (J*M, J) matrix with block diagonal structure
+        blocks = []
+        blocks_inv = []
+        for i in range(0, len(lambda_diag), J):  # Iterate over the vector in steps of 3
+            diag_matrix = np.diag(lambda_diag[i:i+J])  # Create a diagonal matrix from 3 elements
+            diag_matrix_inv = np.linalg.inv(diag_matrix)
+            blocks.append(diag_matrix)
+            blocks_inv.append(diag_matrix_inv)  # Append to the list of blocks
+        
+        # Stack the blocks vertically
+        lambda_mat = np.vstack(blocks)
+        lambda_mat_inv = np.vstack(blocks_inv)
+
+        gamma_mat = np.zeros((M, J, J))
+        for m in range(M):
+            for j in range(J):
+                for k in range(J):
+                    gamma_mat[m, j, k] = (ind_shares[J*m + j, :]*ind_shares[J*m + k, :]*(-alphas[m, :])).mean()
+
+        gamma_mat = gamma_mat.reshape(J*M, J)
+        
+        zeta = np.zeros(J*M)
+        for m in range(M):
+            zeta[m*J:m*J + J] = (lambda_mat_inv[m*J:m*J + J, :] @ (ownership*gamma_mat[m*J:m*J + J, :]) @ (p[m*J:m*J + J].reshape(-1, 1) - mc[m*J:m*J + J]) 
+                                - lambda_mat_inv[m*J:m*J + J, :] @ mkt_shares[m*J:m*J + J].reshape(-1, 1)).reshape(-1)
+
+        return zeta, lambda_mat
+
+    def contraction_mapping(zeta, p0, tol=1e-8, max_iter=1000):
+        """
+        Implements the contraction mapping: p <- c + zeta(p).
+    
+        Parameters:
+        - zeta: function zeta(p), mapping p to a vector or scalar of the same shape as p.
+        - p0: initial guess for p (scalar or array).
+        - tol: convergence tolerance (default 1e-8).
+        - max_iter: maximum number of iterations (default 1000).
+    
+        Returns:
+        - p: converged value of p.
+        """
+        p = p0
+        for n_iter in range(max_iter):
+            zeta_vec, lambda_mat = zeta(p)
+            p_new = mc.reshape(-1) + zeta_vec  # Apply the contraction mapping
+
+            # Reshape into groups of 3x3 matrices and 3x1 vectors
+            lambda_mat_grouped = lambda_mat.reshape(-1, J, J)  # Shape: (100, 3, 3)
+            p_grouped = (p_new - p).reshape(-1, 3, 1)  # Shape: (100, 3, 1)
+            
+            # Perform batch matrix-vector multiplication
+            norm_grouped = np.matmul(lambda_mat_grouped, p_grouped)  # Shape: (100, 3, 1)
+            
+            # Flatten the result back into a vector
+            norm_vector = norm_grouped.reshape(-1)  # Shape: (300,)
+            norm = np.linalg.norm(norm_vector, np.inf)
+            print(f"Iteration {n_iter}. Norm: {norm}.")
+            if norm < tol:  # Check for convergence
+                print("Contraction mapping converged, found prices that satisfy the FOC.")
+                print("Iterations:", n_iter)
+                return p_new
+            p = p_new
+        raise RuntimeError("Contraction mapping did not converge within the maximum number of iterations.")
+
+    p_init = np.ones(J*M)
+    
+    res_prices = contraction_mapping(zeta, p_init)
+    res_shares = predict_ind_shares(res_prices).sum(axis=1)/N
+    
+    return res_prices, res_shares
