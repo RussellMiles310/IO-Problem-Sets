@@ -274,6 +274,7 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, conduct = "oligopoly", verb
     #========== Create a dictionary to return all output ==========================================================================================#
     OUT = {
         'delta_hat': delta_hat,
+        'xi_hat': xi_hat,
         'beta_hat': beta_hat,
         'alpha_hat': alpha_hat,
         'sigma_alpha_hat': sigma_alpha_hat,
