@@ -5,13 +5,27 @@ Function to estimate BLP
 
 from source_functions import *
 
-def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_delta_guess = 1, delta_solve_init = False, max_iter = 10000, beta_true = (5, 1, 1), gamma_true = (2, 1, 1), alpha_true=1, sigma_alpha_true=1):
+def estimate_BLP(df, alphas, sigma_alpha_init, mode, conduct = "oligopoly", verbose_print = 1, scale_delta_guess = 1, delta_solve_init = False, max_iter = 10000, beta_true = (5, 1, 1), gamma_true = (2, 1, 1), alpha_true=1, sigma_alpha_true=1):
 
     ###
     J=3
     M = alphas.shape[0] #Number of markets
     N = alphas.shape[1] #Number of consumers
 
+
+
+    ### Choose conduct 
+    if conduct == "oligopoly":
+        ownership = jnp.eye(J)
+    elif conduct == "collusion":
+        ownership = jnp.ones((J, J))
+    elif conduct == "perfect":
+        ownership = jnp.zeros((J, J)) #Never used, just to avoid errors. In perfect competition, price=marginal cost
+    else:
+        raise Exception("Invalid conduct choice.")
+
+
+    ### Choose mode of estimation run 
     if mode == "demand_side":
         N_instruments = 7
     elif mode == "p_exercise":
@@ -45,7 +59,7 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
     shares = jnp.array(df[['shares']].values)
     W_costs = jnp.array(df[['w']].values)
     Z_costs = jnp.array(df[['Z']].values)
-
+    omegas_true = np.array(df[['eta']].values)
 
 
     # For speed, compute this outside of the function and pass it later
@@ -104,8 +118,8 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
         constraints = [
             {
                 'type': 'eq',  # Equality constraint g(x) = eta
-                'fun': lambda x: np.asarray(constraint_g_joint(x, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN)),  # Convert to NumPy
-                'jac': lambda x: np.asarray(constraint_g_joint_jac(x, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN))  # Convert Jacobian to NumPy
+                'fun': lambda x: np.asarray(constraint_g_joint(x, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN, ownership)),  # Convert to NumPy
+                'jac': lambda x: np.asarray(constraint_g_joint_jac(x, X, Z, Az, M_iv_est, Xs, As, prices, shares, nus, nus_on_prices, MJN, ownership))  # Convert Jacobian to NumPy
             },
             {
                 'type': 'eq',  # Equality constraint s(x) = shares
@@ -179,10 +193,12 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
     
     #Calculate gamma if we're solving the supply-side joint version
     if mode == "supply_joint":
-        ### Calculate gamma_hat
-        elas = calculate_price_elasticity(theta_hat, xi_hat, X, M_iv_est, prices, shares, nus, nus_on_prices, MJN)
-        mc = calculate_marginal_costs(elas, "oligopoly", prices, shares, MJN)
-        gamma_hat = (np.linalg.inv(Xs.T@Xs)@Xs.T)@mc 
+        if conduct == "perfect":
+            gamma_hat = (np.linalg.inv(Xs.T@Xs)@Xs.T)@prices 
+        else:
+            ### Calculate gamma_hat
+            mc = calculate_marginal_costs(theta_hat, ownership, xi_hat, X, M_iv_est, prices, nus, nus_on_prices, MJN)
+            gamma_hat = (np.linalg.inv(Xs.T@Xs)@Xs.T)@mc 
         
         #elas_old = calculate_price_elasticity_old(beta_hat, alpha_hat, sigma_alpha_hat, xi_hat, X, prices, shares, nus, MJN)
         #elas_old=elas_old.flatten()
@@ -200,9 +216,8 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
     #========== Calculate the standard errors =====================================================================================================#
     if mode == "supply_joint":
         #se_sigma, se_betas = standard_errors_joint(theta_hat, Z, Az, M_iv_est, shares, nus_on_prices, MJN)
-        se_sigma, se_betas, se_gamma = standard_errors_joint(theta_hat, X, Z, Az, M_iv_est, Xs, prices, shares, nus_on_prices, nus, MJN)
+        se_sigma, se_betas, se_gamma = standard_errors_joint(theta_hat, X, Z, Az, M_iv_est, Xs, prices, shares, nus_on_prices, nus, MJN, ownership)
         se = np.concatenate([[se_sigma], se_betas, se_gamma])
-
     else: 
         se_sigma, se_betas = standard_errors(theta_hat, Z, Az, M_iv_est, shares, nus_on_prices, MJN)
         se = np.append([se_sigma], se_betas)
@@ -222,20 +237,28 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
     mean_elasticities_hat = elasticities_hat.reshape(J, J, M).mean(axis=2)
 
     #========== Calculate the marginal costs =====================================================================================================#
-    #oligopoly
-    mc_true_olig = calculate_marginal_costs(elasticities_true, "oligopoly", prices, shares, MJN)
-    mc_hat_olig = calculate_marginal_costs(elasticities_hat, "oligopoly", prices, shares, MJN)
-    #Perfect competition
-    mc_true_pc = calculate_marginal_costs(elasticities_true, "perfect", prices, shares, MJN)
-    mc_hat_pc = calculate_marginal_costs(elasticities_hat, "perfect", prices, shares, MJN)
-    #collusion
-    #Perfect competition
-    mc_true_co = calculate_marginal_costs(elasticities_true, "perfect", prices, shares, MJN)
-    mc_hat_co = calculate_marginal_costs(elasticities_hat, "perfect", prices, shares, MJN)
+    #True marginal cost
+    gamma_true_array = np.array(gamma_true).reshape(-1, 1)
+    
+
+    
+    if conduct == "perfect":
+        mc_true=prices  
+        mc_hat=prices    
+    else: 
+        #Predicted marginal cost given conduct
+        mc_true = (Xs@gamma_true_array + omegas_true).flatten()
+        mc_hat = calculate_marginal_costs(theta_hat, ownership, xi_hat, X, M_iv_est, prices, nus, nus_on_prices, MJN).flatten()
+    
+    mean_mc_true = mc_true.reshape(J, M).mean(axis=1)
+    mean_mc_hat = mc_hat.reshape(J, M).mean(axis=1)
     
     #========== Calculate the consumer surplus ===================================================================================================#
     cs_true = calculate_consumer_surplus(beta_true_array, alpha_true, sigma_alpha_true, xi_true, X, prices, MJN)
     cs_hat = calculate_consumer_surplus(beta_hat, alpha_hat, sigma_alpha_hat, xi_hat, X, prices, MJN)
+    
+    mean_cs_true = cs_true.mean()
+    mean_cs_hat = cs_hat.mean()
 
 
 
@@ -248,12 +271,10 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, verbose_print = 1, scale_de
         'se': se,
         'elasticities': {'true': elasticities_true, 'hat': elasticities_hat}, 
         'mean_elasticities': {'true': mean_elasticities_true, 'hat': mean_elasticities_hat}, 
-        'mc': {
-            "perfect":{'true': mc_true_pc, 'hat': mc_hat_pc},
-            "oligopoly":{'true': mc_true_olig, 'hat': mc_hat_olig},
-            "collusion":{'true': mc_true_co, 'hat': mc_hat_co}           
-            }, 
+        'mc': {'true': mc_true, 'hat': mc_hat},
+        'mean_mc': {'true': mean_mc_true, 'hat': mean_mc_hat}, 
         'cs': {'true': cs_true, 'hat': cs_hat}, 
+        'mean_cs': {'true': mean_cs_true, 'hat': mean_cs_hat}, 
         'optim_results': result
     }
     if mode == "supply_joint":
