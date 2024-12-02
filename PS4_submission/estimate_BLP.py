@@ -92,11 +92,13 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, conduct = "oligopoly", verb
     M_iv_est = (np.linalg.inv(Xbar.T @ Pz @ Xbar) @ Xbar.T @ Pz)
     # GMM weighting matrix
     W = np.eye(N_instruments)
-    
-    
+        
+    # Joint estimation, supply-side case. 
+    Xs = Z_everything[:, [0, 7, 9]] #### Keep vector of ones, W_cost, and Z_cost.
+        
+    As = jnp.eye(Xs.shape[0]) - Xs @ jnp.linalg.inv(Xs.T@Xs) @ Xs.T      
+
     if mode == "supply_joint":
-        Xs = Z_everything[:, [0, 7, 9]] #### Keep vector of ones, W_cost, and Z_cost.
-        As = jnp.eye(Xs.shape[0]) - Xs @ jnp.linalg.inv(Xs.T@Xs) @ Xs.T      
         constraint_g_joint_jac = jacobian(constraint_g_joint)
 
 
@@ -199,6 +201,8 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, conduct = "oligopoly", verb
             ### Calculate gamma_hat
             mc = calculate_marginal_costs(theta_hat, ownership, xi_hat, X, M_iv_est, prices, nus, nus_on_prices, MJN)
             gamma_hat = (np.linalg.inv(Xs.T@Xs)@Xs.T)@mc 
+    else:
+        gamma_hat = np.array([np.nan, np.nan, np.nan])
         
         #elas_old = calculate_price_elasticity_old(beta_hat, alpha_hat, sigma_alpha_hat, xi_hat, X, prices, shares, nus, MJN)
         #elas_old=elas_old.flatten()
@@ -220,8 +224,7 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, conduct = "oligopoly", verb
         se = np.concatenate([[se_sigma], se_betas, se_gamma])
     else: 
         se_sigma, se_betas = standard_errors(theta_hat, Z, Az, M_iv_est, shares, nus_on_prices, MJN)
-        se = np.append([se_sigma], se_betas)
-
+        se = np.concatenate([[se_sigma], se_betas, gamma_hat])
 
     #========== Calculate the elasticities =====================================================================================================#
     #Predicted deltas, xis, and moment conditions
@@ -246,12 +249,18 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, conduct = "oligopoly", verb
         mc_true=prices  
         mc_hat=prices    
     else: 
-        #Predicted marginal cost given conduct
         mc_true = (Xs@gamma_true_array + omegas_true).flatten()
         mc_hat = calculate_marginal_costs(theta_hat, ownership, xi_hat, X, M_iv_est, prices, nus, nus_on_prices, MJN).flatten()
     
     mean_mc_true = mc_true.reshape(J, M).mean(axis=1)
     mean_mc_hat = mc_hat.reshape(J, M).mean(axis=1)
+    
+    
+    #========== Calculate the profits per purchase ===============================================================================================#
+    profits_true = prices.flatten() - mc_true.flatten()
+    profits_hat = prices.flatten() - mc_hat.flatten()
+    mean_profits_true = profits_true.reshape(J, M).mean(axis=1)
+    mean_profits_hat = profits_hat.reshape(J, M).mean(axis=1)
     
     #========== Calculate the consumer surplus ===================================================================================================#
     cs_true = calculate_consumer_surplus(beta_true_array, alpha_true, sigma_alpha_true, xi_true, X, prices, MJN)
@@ -268,20 +277,19 @@ def estimate_BLP(df, alphas, sigma_alpha_init, mode, conduct = "oligopoly", verb
         'beta_hat': beta_hat,
         'alpha_hat': alpha_hat,
         'sigma_alpha_hat': sigma_alpha_hat,
+        'gamma_hat': gamma_hat,
         'se': se,
+        'se_names': ["sigma_alpha", "beta0", "beta1", "beta2", "alpha", "gamma0", "gamma1", "gamma2"],
         'elasticities': {'true': elasticities_true, 'hat': elasticities_hat}, 
         'mean_elasticities': {'true': mean_elasticities_true, 'hat': mean_elasticities_hat}, 
         'mc': {'true': mc_true, 'hat': mc_hat},
         'mean_mc': {'true': mean_mc_true, 'hat': mean_mc_hat}, 
+        'profits': {'true': profits_true, 'hat': profits_hat},
+        'mean_profits': {'true': mean_profits_true, 'hat': mean_profits_hat}, 
         'cs': {'true': cs_true, 'hat': cs_hat}, 
         'mean_cs': {'true': mean_cs_true, 'hat': mean_cs_hat}, 
         'optim_results': result
     }
-    if mode == "supply_joint":
-        OUT["gamma_hat"] = gamma_hat
-        OUT["se_names"] = ["sigma_alpha", "beta0", "beta1", "beta2", "alpha", "gamma0", "gamma1", "gamma2"]
-    else:
-        OUT["se_names"] = ["sigma_alpha", "beta0", "beta1", "beta2", "alpha"]
 
     print("#============================================================================#")
     print("#== BLP Estimation Complete")
