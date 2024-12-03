@@ -886,7 +886,7 @@ def calculate_welfare(data, alphas, beta, epsilons):
         mkt_welfare = np.amax(product_utilities, axis=1).reshape(500, -1)
 
         # Divide by alpha_i's to get the surplus in monetary units
-        mkt_welfare = mkt_welfare/alphas.iloc[market_id-1]
+        mkt_welfare = mkt_welfare/alphas.iloc[market_id-1].values
         
         if market_id == 1:
             market_welfares = mkt_welfare
@@ -980,11 +980,11 @@ def predict_prices_and_shares(ownership, mc, betas, alpha, sigma_alpha, xi, X, M
         # Reshape into a (J*M, J) matrix with block diagonal structure
         blocks = []
         blocks_inv = []
-        for i in range(0, len(lambda_diag), J):  # Iterate over the vector in steps of 3
-            diag_matrix = np.diag(lambda_diag[i:i+J])  # Create a diagonal matrix from 3 elements
+        for i in range(0, len(lambda_diag), J):
+            diag_matrix = np.diag(lambda_diag[i:i+J])
             diag_matrix_inv = np.linalg.inv(diag_matrix)
             blocks.append(diag_matrix)
-            blocks_inv.append(diag_matrix_inv)  # Append to the list of blocks
+            blocks_inv.append(diag_matrix_inv)
         
         # Stack the blocks vertically
         lambda_mat = np.vstack(blocks)
@@ -1021,7 +1021,7 @@ def predict_prices_and_shares(ownership, mc, betas, alpha, sigma_alpha, xi, X, M
         p = p0
         for n_iter in range(max_iter):
             zeta_vec, lambda_mat = zeta(p)
-            p_new = mc.reshape(-1) + zeta_vec  # Apply the contraction mapping
+            p_new = mc.reshape(-1) + zeta_vec
 
             # Reshape into groups of 3x3 matrices and 3x1 vectors
             lambda_mat_grouped = lambda_mat.reshape(-1, J, J)  # Shape: (100, 3, 3)
