@@ -854,7 +854,7 @@ def calculate_welfare(data, alphas, beta, epsilons):
 #=============================================================================#
 # Plot the histograms for the true data. 
 #=============================================================================#
-def plot_two_histograms(data1, data2, bins=500, labels=('Data 1', 'Data 2')):
+def plot_two_histograms(data1, data2, bins=500, labels=('Data 1', 'Data 2'), path=""):
     """
     Purpose: Plots two histograms side by side to compare the distributions of two different datasets.
 
@@ -894,6 +894,10 @@ def plot_two_histograms(data1, data2, bins=500, labels=('Data 1', 'Data 2')):
     
     # Show the plots
     plt.tight_layout()
+    
+    if path != "":
+        plt.savefig(path, dpi=400)
+        
     plt.show()
 
 def predict_prices_and_shares(ownership, mc, betas, alpha, sigma_alpha, xi, X, MJN):
